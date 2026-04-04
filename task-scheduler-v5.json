@@ -1,0 +1,222 @@
+{
+  "name": "WhatsApp AI Agent - Task Scheduler v5",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "sched-cron",
+      "name": "Every Minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        300
+      ],
+      "notes": "Runs every 60 seconds to check for due tasks and reminders."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ══════════════════════════════════════════\n// CHECK DUE TASKS FROM SUPABASE\n// ✅ v5: joins users table to get phone_number explicitly\n// ══════════════════════════════════════════\nconst url = $env.SUPABASE_URL;\nconst key = $env.SUPABASE_KEY;\nconst now = new Date().toISOString();\n\nif (!url || !key) {\n  console.warn('Supabase not configured — using static data fallback');\n  const state = $getWorkflowStaticData('global');\n  const allTasks = state.tasks || {};\n  const dueTasks = [];\n  for (const userId in allTasks) {\n    for (const task of (allTasks[userId] || [])) {\n      if (!task.sent && task.due_at) {\n        const dueTime = new Date(task.due_at);\n        if (!isNaN(dueTime) && dueTime <= new Date()) {\n          dueTasks.push({ ...task, user_id: userId });\n        }\n      }\n    }\n  }\n  return dueTasks.map(t => ({ json: t }));\n}\n\ntry {\n  // ✅ join users to get phone_number — never parse user_id\n  const response = await $http.request({\n    method: 'GET',\n    url: `${url}/rest/v1/tasks?sent=eq.false&due_at=lte.${now}&select=*,users(phone_number)`,\n    headers: {\n      'apikey': key,\n      'Authorization': `Bearer ${key}`,\n      'Content-Type': 'application/json'\n    }\n  });\n  const tasks = JSON.parse(response) || [];\n  if (tasks.length === 0) return [];\n  // Flatten phone_number from joined users object\n  return tasks.map(t => ({\n    json: {\n      ...t,\n      phone_number: t.users?.phone_number || null\n    }\n  }));\n} catch(e) {\n  console.error('Failed to fetch due tasks:', e.message);\n  return [];\n}"
+      },
+      "id": "sched-check-tasks",
+      "name": "Check Due Tasks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{$json.tenant_id || $env.WHATSAPP_PHONE_NUMBER_ID}}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{$env.WHATSAPP_ACCESS_TOKEN}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"messaging_product\":\"whatsapp\",\"to\":\"{{$json.phone_number}}\",\"type\":\"text\",\"text\":{\"body\":\"⏰ *تذكير!*\\n\\n📌 {{$json.task}}\\n\\nتم إنشاء هذا التذكير بناءً على طلبك. ✅\"}}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 2,
+            "waitBetweenTries": 1000
+          }
+        }
+      },
+      "id": "sched-send-reminder",
+      "name": "Send Reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mark task as sent in Supabase\n// ✅ v5: retry logic added — prevents double-send on Supabase write failure\nconst d   = $input.first().json;\nconst url = $env.SUPABASE_URL;\nconst key = $env.SUPABASE_KEY;\n\nif (!url || !key || !d.id) {\n  // Fallback: mark in static data\n  const state = $getWorkflowStaticData('global');\n  if (state.tasks && state.tasks[d.user_id]) {\n    state.tasks[d.user_id] = state.tasks[d.user_id].map(t =>\n      t.task === d.task ? { ...t, sent: true } : t\n    );\n  }\n  return [$input.first()];\n}\n\n// ✅ Retry up to 3 times before giving up\nconst MAX_RETRIES = 3;\nlet lastError;\n\nfor (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {\n  try {\n    await $http.request({\n      method: 'PATCH',\n      url: `${url}/rest/v1/tasks?id=eq.${d.id}`,\n      headers: {\n        'apikey': key,\n        'Authorization': `Bearer ${key}`,\n        'Content-Type': 'application/json',\n        'Prefer': 'return=minimal'\n      },\n      body: JSON.stringify({ sent: true })\n    });\n    // Success — exit retry loop\n    return [$input.first()];\n  } catch(e) {\n    lastError = e;\n    console.warn(`Mark-sent attempt ${attempt} failed: ${e.message}`);\n    if (attempt < MAX_RETRIES) {\n      await new Promise(r => setTimeout(r, 500 * attempt)); // exponential backoff\n    }\n  }\n}\n\n// All retries failed — log but don't crash the workflow\nconsole.error(`Failed to mark task ${d.id} as sent after ${MAX_RETRIES} attempts: ${lastError?.message}`);\nreturn [$input.first()];"
+      },
+      "id": "sched-mark-sent",
+      "name": "Mark Task Sent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24,
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "id": "sched-daily-trigger",
+      "name": "Daily Report Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        500
+      ],
+      "notes": "Fires at 9am every day to send the daily summary to Telegram."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ══════════════════════════════════════════\n// BUILD DAILY SUMMARY REPORT  [NEW - Tier 3]\n// ══════════════════════════════════════════\nconst url = $env.SUPABASE_URL;\nconst key = $env.SUPABASE_KEY;\n\nconst today     = new Date();\ntoday.setHours(0,0,0,0);\nconst yesterday = new Date(today);\nyesterday.setDate(yesterday.getDate() - 1);\n\nlet stats = { total: 0, users: 0, tasks: 0, questions: 0, greetings: 0, commands: 0, unknown: 0 };\n\nif (url && key) {\n  try {\n    const response = await $http.request({\n      method: 'GET',\n      url: `${url}/rest/v1/conversations?timestamp=gte.${yesterday.toISOString()}&timestamp=lt.${today.toISOString()}&select=intent,user_id`,\n      headers: { 'apikey': key, 'Authorization': `Bearer ${key}` }\n    });\n    const rows = JSON.parse(response) || [];\n    stats.total      = rows.length;\n    stats.users      = new Set(rows.map(r => r.user_id)).size;\n    stats.tasks      = rows.filter(r => r.intent === 'task').length;\n    stats.questions  = rows.filter(r => r.intent === 'question').length;\n    stats.greetings  = rows.filter(r => r.intent === 'greeting').length;\n    stats.commands   = rows.filter(r => r.intent === 'command').length;\n    stats.unknown    = rows.filter(r => r.intent === 'unknown').length;\n  } catch(e) {\n    console.warn('Stats fetch failed:', e.message);\n  }\n}\n\nconst report = `📊 *Daily Report — WhatsApp AI Agent*\n📅 ${yesterday.toLocaleDateString('ar-SA')}\n\n💬 Messages: ${stats.total}\n👤 Unique users: ${stats.users}\n\n📋 Intents breakdown:\n✅ Tasks: ${stats.tasks}\n❓ Questions: ${stats.questions}\n👋 Greetings: ${stats.greetings}\n⚡ Commands: ${stats.commands}\n❔ Unknown: ${stats.unknown}\n\n_Sent automatically at 9:00 AM_`;\n\nreturn [{ json: { report } }];"
+      },
+      "id": "sched-daily-report",
+      "name": "Build Daily Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendHeaders": true,
+        "headerParameters": [
+          {
+            "name": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"chat_id\":\"{{$env.TELEGRAM_CHAT_ID}}\",\"text\":\"{{$json.report}}\",\"parse_mode\":\"Markdown\"}"
+      },
+      "id": "sched-send-report",
+      "name": "Send Daily Report to Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        640,
+        500
+      ]
+    }
+  ],
+  "connections": {
+    "Every Minute": {
+      "main": [
+        [
+          {
+            "node": "Check Due Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Due Tasks": {
+      "main": [
+        [
+          {
+            "node": "Send Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Reminder": {
+      "main": [
+        [
+          {
+            "node": "Mark Task Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Report Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build Daily Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Daily Report": {
+      "main": [
+        [
+          {
+            "node": "Send Daily Report to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    "whatsapp",
+    "scheduler",
+    "reminders",
+    "multi-tenant",
+    "v5"
+  ],
+  "versionId": "87949a53-8eee-4f76-b33f-b34458355d60",
+  "id": "8a98cca9-8ae5-4fd1-88bd-f39a2c8a144a",
+  "meta": {
+    "instanceId": "64c2bf08-865f-492e-908c-cea757a0ad7a",
+    "templateCredsSetupCompleted": true
+  }
+}

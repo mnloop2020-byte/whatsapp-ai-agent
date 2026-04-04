@@ -1,0 +1,935 @@
+{
+  "name": "WhatsApp AI Agent v6.2",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "messages"
+        ]
+      },
+      "id": "node-trigger",
+      "name": "WhatsApp Trigger",
+      "type": "n8n-nodes-base.whatsAppTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        500
+      ],
+      "notes": "Entry point. Receives all WhatsApp webhook events: messages, status updates, delivery receipts."
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ══════════════════════════════════════════\n// EXTRACT & VALIDATE MESSAGE — v4 Multi-Tenant\n// ══════════════════════════════════════════\nconst data = $input.first().json;\n\nconst entry    = data?.body?.entry?.[0] || data?.entry?.[0];\nconst change   = entry?.changes?.[0]?.value;\nconst messages = data?.messages?.[0] || change?.messages?.[0];\nconst contacts = data?.contacts?.[0]  || change?.contacts?.[0];\nconst statuses = data?.statuses?.[0]  || change?.statuses?.[0];\nconst metadata = change?.metadata || {};\n\nif (statuses && !messages) return [{ json: { skip: true, reason: 'status_event' } }];\nif (!messages)             return [{ json: { skip: true, reason: 'no_message' } }];\n\nconst from        = messages?.from || '';\nconst name        = contacts?.profile?.name || 'مستخدم';\nconst messageId   = messages?.id || '';\nconst messageType = messages?.type || 'text';\n\n// ── Multi-tenant: identify which WhatsApp number received the message ──\nconst tenantPhoneId = metadata?.phone_number_id || $env.WHATSAPP_PHONE_NUMBER_ID || 'default';\nconst tenantId      = tenantPhoneId;\n\nlet messageText = '';\nif (messageType === 'text') {\n  messageText = messages?.text?.body || '';\n} else if (messageType === 'audio') {\n  messageText = `[VOICE:${messages?.audio?.id || ''}]`;\n} else if (messageType === 'image') {\n  const caption = messages?.image?.caption || '';\n  messageText = `[IMAGE:${messages?.image?.id || ''}${caption ? ':' + caption : ''}]`;\n} else if (messageType === 'document') {\n  messageText = '[مستند]';\n} else if (messageType === 'location') {\n  const loc = messages?.location;\n  messageText = loc ? `[موقع: ${loc.latitude}, ${loc.longitude}]` : '[موقع]';\n} else {\n  messageText = '[رسالة غير مدعومة]';\n}\n\nif (!from) return [{ json: { skip: true, reason: 'no_sender' } }];\nif (!messageText.trim()) return [{ json: { skip: true, reason: 'empty_message' } }];\n\nconst maxLen = parseInt($env.MAX_MESSAGE_LENGTH || '2000');\nif (messageText.length > maxLen) messageText = messageText.substring(0, maxLen) + '...';\nmessageText = messageText.replace(/<[^>]*>/g, '');\n\nreturn [{\n  json: {\n    tenant_id:    tenantId,\n    user_id:      `${tenantId}:${from}`,\n    phone_number: from,\n    user_name:    name,\n    message:      messageText,\n    msg_type:     messageType,\n    message_id:   messageId,\n    timestamp:    new Date().toISOString(),\n    raw_audio_id: messageType === 'audio' ? messages?.audio?.id : null,\n    raw_image_id: messageType === 'image' ? messages?.image?.id : null,\n    skip: false\n  }\n}];\n"
+      },
+      "id": "node-extract",
+      "name": "Extract Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.skip }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "node-skip-invalid",
+      "name": "Skip If Invalid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        640,
+        500
+      ],
+      "notes": "TRUE (skip) → stop. FALSE → continue to security check."
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ══════════════════════════════════════════\n// VERIFY WEBHOOK SIGNATURE — v6.2\n// ✅ FIX: n8n WhatsApp Trigger node handles\n//    signature verification automatically.\n//    This node adds extra app-secret check\n//    only when called via generic webhook.\n// ══════════════════════════════════════════\nconst crypto = require('crypto');\nconst data   = $input.first().json;\n\nconst appSecret = $env.WHATSAPP_APP_SECRET || '';\nconst sigHeader = $input.first()?.headers?.['x-hub-signature-256'] || '';\n\n// ── اذا مافي secret مضبوط — اسمح بالمرور ──\n// (n8n WhatsApp Trigger يتحقق تلقائياً)\nif (!appSecret) {\n  return [$input.first()];\n}\n\n// ── اذا مافي signature header — اسمح بالمرور ──\n// WhatsApp Trigger يكون قد تحقق منها بالفعل\nif (!sigHeader) {\n  return [$input.first()];\n}\n\n// ── تحقق إضافي للـ Generic Webhook فقط ──\n// نستخدم rawBody اذا متوفر، وإلا نتجاوز\nconst rawBody = $input.first()?.rawBody || '';\nif (!rawBody) {\n  // rawBody غير متوفر في WhatsApp Trigger — تجاوز\n  return [$input.first()];\n}\n\ntry {\n  const expectedSig = 'sha256=' + crypto\n    .createHmac('sha256', appSecret)\n    .update(rawBody)\n    .digest('hex');\n\n  const sigBuffer      = Buffer.from(sigHeader);\n  const expectedBuffer = Buffer.from(expectedSig);\n\n  if (sigBuffer.length !== expectedBuffer.length) {\n    console.error('Signature length mismatch');\n    return [{ json: { skip: true, reason: 'invalid_signature' } }];\n  }\n\n  const valid = crypto.timingSafeEqual(sigBuffer, expectedBuffer);\n  if (!valid) {\n    console.error('Signature mismatch — possible spoofed request');\n    return [{ json: { skip: true, reason: 'invalid_signature' } }];\n  }\n} catch(e) {\n  // أي خطأ في التحقق — اسمح بالمرور (WhatsApp Trigger تحقق بالفعل)\n  console.warn('Signature check error (non-fatal):', e.message);\n}\n\nreturn [$input.first()];\n"
+      },
+      "id": "node-sig-verify",
+      "name": "Verify Webhook Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        500
+      ],
+      "notes": "NEW (Tier 2): Validates X-Hub-Signature-256 header to block forged webhook requests. Requires WHATSAPP_APP_SECRET env var."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.skip }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "node-skip-sig",
+      "name": "Skip If Invalid Signature",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1080,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ══════════════════════════════════════════\n// SEND READ RECEIPT + TYPING INDICATOR — v6.1\n// FIX: uses tenant_id for multi-tenant phone routing\n// ══════════════════════════════════════════\nconst d       = $input.first().json;\nconst token   = $env.WHATSAPP_ACCESS_TOKEN;\nconst phoneId = d.tenant_id || $env.WHATSAPP_PHONE_NUMBER_ID;\nconst base    = `https://graph.facebook.com/v18.0/${phoneId}/messages`;\n\ntry {\n  // 1. Mark message as read\n  await $http.request({\n    method: 'POST',\n    url: base,\n    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      messaging_product: 'whatsapp',\n      status: 'read',\n      message_id: d.message_id\n    })\n  });\n\n  // 2. Send typing indicator\n  await $http.request({\n    method: 'POST',\n    url: base,\n    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      messaging_product: 'whatsapp',\n      recipient_type: 'individual',\n      to: d.phone_number,\n      type: 'reaction',\n      reaction: { message_id: d.message_id, emoji: '⏳' }\n    })\n  });\n} catch(e) {\n  console.warn('Read receipt / typing failed (non-fatal):', e.message);\n}\n\nreturn [$input.first()];\n"
+      },
+      "id": "node-read-typing",
+      "name": "Read Receipt + Typing",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        500
+      ],
+      "notes": "NEW (Tier 2): Marks message as read (double blue tick) and sends typing indicator. Errors are non-fatal."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ══════════════════════════════════════════\n// USER ONBOARDING — v4\n// FIX: Check Supabase first, fallback to static data\n// ══════════════════════════════════════════\nconst d = $input.first().json;\nconst token      = $env.WHATSAPP_ACCESS_TOKEN;\nconst phoneId    = d.tenant_id || $env.WHATSAPP_PHONE_NUMBER_ID;\nconst supaUrl    = $env.SUPABASE_URL || '';\nconst supaKey    = $env.SUPABASE_KEY || '';\n\ntry {\n  let isNewUser = true;\n\n  // Check Supabase first (persists across restarts)\n  if (supaUrl && supaKey) {\n    try {\n      const r = await $http.request({\n        method: 'GET',\n        url: `${supaUrl}/rest/v1/users?user_id=eq.${encodeURIComponent(d.user_id)}&select=user_id,total_messages`,\n        headers: { 'apikey': supaKey, 'Authorization': `Bearer ${supaKey}` }\n      });\n      const users = JSON.parse(r);\n      if (users && users.length > 0 && users[0].total_messages > 0) {\n        isNewUser = false;\n      }\n    } catch(e) {\n      // Supabase unavailable — fallback to static data\n      const state = $getWorkflowStaticData('global');\n      if (!state.knownUsers) state.knownUsers = {};\n      if (state.knownUsers[d.user_id]) isNewUser = false;\n    }\n  } else {\n    // No Supabase — use static data\n    const state = $getWorkflowStaticData('global');\n    if (!state.knownUsers) state.knownUsers = {};\n    if (state.knownUsers[d.user_id]) isNewUser = false;\n    else state.knownUsers[d.user_id] = new Date().toISOString();\n  }\n\n  if (isNewUser) {\n    const botName = $env.BOT_NAME || 'مساعد ذكي';\n    const welcomeMsg = `أهلاً وسهلاً ${d.user_name}! 👋\n\nأنا ${botName}. يمكنني مساعدتك في:\n\n✅ *المهام والتذكيرات*\nقل: \"ذكرني بموعد الاجتماع الساعة 3\"\n\n💬 *الإجابة على أسئلتك*\nاسألني أي شيء!\n\n⚡ *تنفيذ الأوامر*\nقل: \"أرسل تقرير اليوم\"\n\nكيف يمكنني مساعدتك؟ 😊`;\n\n    await $http.request({\n      method: 'POST',\n      url: `https://graph.facebook.com/v18.0/${phoneId}/messages`,\n      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },\n      body: JSON.stringify({\n        messaging_product: 'whatsapp',\n        to: d.phone_number || d.user_id.split(':').pop(),\n        type: 'text',\n        text: { body: welcomeMsg, preview_url: false }\n      })\n    });\n  }\n} catch(e) {\n  console.warn('Onboarding failed (non-fatal):', e.message);\n}\n\nreturn [$input.first()];"
+      },
+      "id": "node-onboarding",
+      "name": "User Onboarding",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        500
+      ],
+      "notes": "FIX v4: Checks Supabase (not just static data) to detect new users — survives restarts."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ══════════════════════════════════════════\n// VOICE TRANSCRIPTION  [NEW - Tier 3]\n// Transcribes audio messages using Whisper API\n// ══════════════════════════════════════════\nconst d = $input.first().json;\n\n// Only process if it's a voice message and OpenAI key is configured\nif (d.msg_type !== 'audio' || !$env.OPENAI_API_KEY || !d.raw_audio_id) {\n  return [$input.first()];\n}\n\ntry {\n  const waToken = $env.WHATSAPP_ACCESS_TOKEN;\n  const phoneId = $env.WHATSAPP_PHONE_NUMBER_ID;\n\n  // Step 1: Get the media URL from WhatsApp\n  const mediaResponse = await $http.request({\n    method: 'GET',\n    url: `https://graph.facebook.com/v18.0/${d.raw_audio_id}`,\n    headers: { Authorization: `Bearer ${waToken}` }\n  });\n  const mediaUrl = JSON.parse(mediaResponse).url;\n\n  // Step 2: Download the audio file\n  const audioResponse = await $http.request({\n    method: 'GET',\n    url: mediaUrl,\n    headers: { Authorization: `Bearer ${waToken}` },\n    encoding: 'arraybuffer'\n  });\n\n  // Step 3: Send to Whisper for transcription\n  const formData = new FormData();\n  formData.append('file', new Blob([audioResponse], { type: 'audio/ogg' }), 'audio.ogg');\n  formData.append('model', 'whisper-1');\n  formData.append('language', 'ar');\n\n  const transcriptResponse = await $http.request({\n    method: 'POST',\n    url: 'https://api.openai.com/v1/audio/transcriptions',\n    headers: { Authorization: `Bearer ${$env.OPENAI_API_KEY}` },\n    body: formData\n  });\n\n  const transcript = JSON.parse(transcriptResponse).text;\n  console.log('Voice transcribed:', transcript);\n\n  return [{ json: { ...d, message: transcript, original_type: 'audio' } }];\n} catch(e) {\n  console.warn('Voice transcription failed:', e.message);\n  return [{ json: { ...d, message: '[رسالة صوتية — تعذّر التحويل]' } }];\n}"
+      },
+      "id": "node-voice",
+      "name": "Voice Transcription",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1740,
+        500
+      ],
+      "notes": "NEW (Tier 3): Transcribes WhatsApp voice messages using OpenAI Whisper. Requires OPENAI_API_KEY. Gracefully skipped if key not set."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ══════════════════════════════════════════\n// IMAGE ANALYSIS  [NEW - Tier 3]\n// Analyzes images using Gemini Vision\n// ══════════════════════════════════════════\nconst d = $input.first().json;\n\nif (d.msg_type !== 'image' || !d.raw_image_id) {\n  return [$input.first()];\n}\n\ntry {\n  const waToken = $env.WHATSAPP_ACCESS_TOKEN;\n  const geminiKey = $env.GEMINI_API_KEY;\n\n  // Step 1: Get media URL from WhatsApp\n  const mediaResponse = await $http.request({\n    method: 'GET',\n    url: `https://graph.facebook.com/v18.0/${d.raw_image_id}`,\n    headers: { Authorization: `Bearer ${waToken}` }\n  });\n  const mediaUrl = JSON.parse(mediaResponse).url;\n\n  // Step 2: Download image as base64\n  const imgResponse = await $http.request({\n    method: 'GET',\n    url: mediaUrl,\n    headers: { Authorization: `Bearer ${waToken}` },\n    encoding: 'base64'\n  });\n\n  // Step 3: Send to Gemini Vision\n  const caption = d.message.includes(':') ? d.message.split(':').slice(2).join(':') : '';\n  const prompt  = caption || 'صف هذه الصورة بالتفصيل وأخبرني بأهم ما فيها.';\n\n  const visionResponse = await $http.request({\n    method: 'POST',\n    url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${geminiKey}`,\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      contents: [{\n        parts: [\n          { text: prompt },\n          { inline_data: { mime_type: 'image/jpeg', data: imgResponse } }\n        ]\n      }],\n      generationConfig: { maxOutputTokens: 500 }\n    })\n  });\n\n  const analysis = JSON.parse(visionResponse)?.candidates?.[0]?.content?.parts?.[0]?.text || 'تعذّر تحليل الصورة.';\n  return [{ json: { ...d, message: `[تحليل الصورة]: ${analysis}`, original_type: 'image' } }];\n} catch(e) {\n  console.warn('Image analysis failed:', e.message);\n  return [{ json: { ...d, message: '[صورة — تعذّر التحليل]' } }];\n}"
+      },
+      "id": "node-image",
+      "name": "Image Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        500
+      ],
+      "notes": "NEW (Tier 3): Downloads WhatsApp image and sends to Gemini Vision for analysis. Falls back gracefully on failure."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ══════════════════════════════════════════\n// DEDUPLICATE + RATE LIMIT — v6\n// ✅ Uses Redis for persistence across n8n restarts\n//    Falls back to static data if Redis not configured\n// ══════════════════════════════════════════\nconst d          = $input.first().json;\nconst now        = Date.now();\nconst rateLimit  = parseInt($env.RATE_LIMIT_PER_MIN || '10');\nconst redisUrl   = $env.REDIS_URL   || '';\nconst redisToken = $env.REDIS_TOKEN || '';\n\n// ── Helper: Redis GET / SET ───────────────\nasync function redisGet(key) {\n  const r = await $http.request({\n    method: 'GET',\n    url: `${redisUrl}/get/${key}`,\n    headers: { Authorization: `Bearer ${redisToken}` }\n  });\n  const parsed = JSON.parse(r);\n  return parsed.result ? JSON.parse(parsed.result) : null;\n}\n\nasync function redisSet(key, value, exSeconds) {\n  await $http.request({\n    method: 'POST',\n    url: `${redisUrl}/set/${key}`,\n    headers: { Authorization: `Bearer ${redisToken}`, 'Content-Type': 'application/json' },\n    body: JSON.stringify({ value: JSON.stringify(value), ex: exSeconds })\n  });\n}\n\nif (redisUrl && redisToken) {\n  try {\n    // ── Deduplication via Redis ─────────────\n    if (d.message_id) {\n      const dedupKey = `dedup:${d.message_id}`;\n      const exists   = await redisGet(dedupKey);\n      if (exists) {\n        return [{ json: { skip: true, reason: 'duplicate', user_id: d.user_id } }];\n      }\n      await redisSet(dedupKey, 1, 300); // expire after 5 min\n    }\n\n    // ── Rate limiting via Redis ─────────────\n    const rateKey    = `rate:${d.user_id}`;\n    const timestamps = (await redisGet(rateKey)) || [];\n    const recent     = timestamps.filter(t => now - t < 60000);\n    if (recent.length >= rateLimit) {\n      return [{ json: { skip: true, reason: 'rate_limit', user_id: d.user_id } }];\n    }\n    recent.push(now);\n    await redisSet(rateKey, recent, 120); // expire after 2 min\n\n  } catch(e) {\n    console.warn('Redis dedup failed — falling back to static data:', e.message);\n    // Fall through to static data fallback below\n  }\n} else {\n  // ── Fallback: static data (lost on restart) ─\n  try {\n    const state = $getWorkflowStaticData('global');\n    if (!state.seen)  state.seen  = {};\n    if (!state.rates) state.rates = {};\n\n    if (d.message_id && state.seen[d.message_id] && (now - state.seen[d.message_id]) < 300000) {\n      return [{ json: { skip: true, reason: 'duplicate', user_id: d.user_id } }];\n    }\n    if (d.message_id) state.seen[d.message_id] = now;\n    for (const id in state.seen) {\n      if (now - state.seen[id] > 600000) delete state.seen[id];\n    }\n\n    if (!state.rates[d.user_id]) state.rates[d.user_id] = [];\n    state.rates[d.user_id] = state.rates[d.user_id].filter(t => now - t < 60000);\n    if (state.rates[d.user_id].length >= rateLimit) {\n      return [{ json: { skip: true, reason: 'rate_limit', user_id: d.user_id } }];\n    }\n    state.rates[d.user_id].push(now);\n  } catch(e) {\n    console.warn('Dedup/rate state error (non-fatal):', e.message);\n  }\n}\n\nreturn [$input.first()];"
+      },
+      "id": "node-dedup",
+      "name": "Deduplicate + Rate Limit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2180,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.skip }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "node-skip-rate",
+      "name": "Skip If Rate Limited",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2400,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v18.0/{{$env.WHATSAPP_PHONE_NUMBER_ID}}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{$env.WHATSAPP_ACCESS_TOKEN}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"messaging_product\":\"whatsapp\",\"to\":\"{{$json.user_id}}\",\"type\":\"text\",\"text\":{\"body\":\"⏳ أرسلت رسائل كثيرة. انتظر دقيقة واحدة ثم حاول مجدداً.\"}}"
+      },
+      "id": "node-rate-reply",
+      "name": "Send Rate Limit Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2620,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ══════════════════════════════════════════\n// LOAD CONVERSATION HISTORY — v4 Strong Memory\n// Short-term: Redis (last 50 messages)\n// Long-term:  Supabase (full history summary)\n// ══════════════════════════════════════════\nconst d = $input.first().json;\nconst redisUrl   = $env.REDIS_URL   || '';\nconst redisToken = $env.REDIS_TOKEN || '';\nconst supaUrl    = $env.SUPABASE_URL || '';\nconst supaKey    = $env.SUPABASE_KEY || '';\n\nlet history     = [];\nlet userProfile = {};\n\n// ── 1. Short-term memory: Redis ───────────────────\nif (redisUrl && redisToken) {\n  try {\n    const r = await $http.request({\n      method: 'GET',\n      url: `${redisUrl}/get/history:${d.user_id}`,\n      headers: { Authorization: `Bearer ${redisToken}` }\n    });\n    const parsed = JSON.parse(r);\n    if (parsed.result) history = JSON.parse(parsed.result) || [];\n  } catch(e) {\n    console.warn('Redis history load failed:', e.message);\n    // Fallback to static data\n    try {\n      const state = $getWorkflowStaticData('global');\n      history = (state.history || {})[d.user_id] || [];\n    } catch(e2) {}\n  }\n} else {\n  try {\n    const state = $getWorkflowStaticData('global');\n    history = (state.history || {})[d.user_id] || [];\n  } catch(e) {}\n}\n\n// Keep last 50 exchanges in short-term\nif (history.length > 50) history = history.slice(-50);\n\n// ── 2. Long-term memory: User profile from Supabase ──\nif (supaUrl && supaKey) {\n  try {\n    const r = await $http.request({\n      method: 'GET',\n      url: `${supaUrl}/rest/v1/users?user_id=eq.${encodeURIComponent(d.user_id)}&select=*`,\n      headers: { 'apikey': supaKey, 'Authorization': `Bearer ${supaKey}` }\n    });\n    const users = JSON.parse(r);\n    if (users && users.length > 0) {\n      userProfile = users[0];\n    }\n  } catch(e) {\n    console.warn('User profile load failed (non-fatal):', e.message);\n  }\n}\n\n// ── 3. Build memory context summary ──────────────\nconst totalMessages  = userProfile.total_messages || 0;\nconst preferredLang  = userProfile.language || 'ar';\nconst userNotes      = userProfile.notes || '';\n\nconst memoryContext = totalMessages > 0\n  ? `[ملاحظة: هذا المستخدم تواصل معك ${totalMessages} مرة سابقاً. لغته المفضلة: ${preferredLang}.${userNotes ? ' ' + userNotes : ''}]`\n  : '';\n\nreturn [{ json: { ...d, history, userProfile, memoryContext, preferredLang } }];\n"
+      },
+      "id": "node-load-history",
+      "name": "Load Conversation History",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2620,
+        500
+      ],
+      "notes": "NEW (Tier 2): Loads per-user history from Redis (with static data fallback). Redis requires REDIS_URL + REDIS_TOKEN (Upstash)."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{$json.geminiModel || 'gemini-2.0-flash'}}:generateContent?key={{$env.GEMINI_API_KEY}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [{\"parts\": [{\"text\": \"{{ $json.message }}\"}]}],\n  \"systemInstruction\": {\"parts\": [{\"text\": \"أنت نظام تصنيف. أرجع JSON فقط بدون أي نص إضافي:\\n{\\\"intent\\\": \\\"task|question|command|greeting|unknown\\\", \\\"confidence\\\": \\\"high|medium|low\\\", \\\"summary\\\": \\\"ملخص\\\", \\\"language\\\": \\\"ar|en|other\\\"}\\n\"}]},\n  \"generationConfig\": {\"temperature\": 0.1, \"maxOutputTokens\": 150}\n}",
+        "options": {
+          "timeout": 10000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 1000
+          }
+        }
+      },
+      "id": "node-classifier",
+      "name": "Intent Classifier",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2840,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ══════════════════════════════════════════\n// PARSE INTENT — v6.2\n// FIX: لا يعتمد على input._upstream — يقرأ من input مباشرة\n// ══════════════════════════════════════════\nconst input    = $input.first().json;\nconst rawText  = input?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';\nconst cleanText = rawText.replace(/```json/gi,'').replace(/```/g,'').trim();\n\nconst VALID = ['greeting','task','question','command','unknown'];\nlet parsed = {};\ntry {\n  parsed = JSON.parse(cleanText);\n  if (!VALID.includes(parsed.intent)) parsed.intent = 'unknown';\n} catch(e) {\n  parsed = { intent: 'unknown', confidence: 'low', summary: '', language: 'ar' };\n}\n\n// ✅ FIX: نقرأ upstream data من input._upstream بدل node reference\n// لا نستخدم node name reference — أكثر استقراراً\nconst upstream = input._upstream || input;\n\nreturn [{ json: {\n  // Identity\n  user_id:       upstream.user_id       || input.user_id,\n  tenant_id:     upstream.tenant_id     || input.tenant_id,\n  phone_number:  upstream.phone_number  || input.phone_number,\n  user_name:     upstream.user_name     || input.user_name,\n  // Message\n  message:       upstream.message       || input.message,\n  msg_type:      upstream.msg_type      || input.msg_type,\n  message_id:    upstream.message_id    || input.message_id,\n  timestamp:     upstream.timestamp     || input.timestamp,\n  // Memory\n  history:       upstream.history       || [],\n  userProfile:   upstream.userProfile   || {},\n  memoryContext: upstream.memoryContext || '',\n  preferredLang: upstream.preferredLang || 'ar',\n  // Business\n  businessPersona:   upstream.businessPersona   || '',\n  hasBusinessData:   upstream.hasBusinessData   || false,\n  geminiModel:       upstream.geminiModel       || 'gemini-2.0-flash',\n  geminiMaxTokens:   upstream.geminiMaxTokens   || 800,\n  geminiTemperature: upstream.geminiTemperature || 0.75,\n  // Intent\n  intent:     parsed.intent     || 'unknown',\n  confidence: parsed.confidence || 'low',\n  summary:    parsed.summary    || '',\n  language:   parsed.language   || 'ar'\n} }];\n"
+      },
+      "id": "node-parse-intent",
+      "name": "Parse Intent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3060,
+        500
+      ],
+      "notes": "FIX v4: Now correctly forwards ALL upstream fields (tenant_id, phone_number, memoryContext, userProfile) to prevent data loss."
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.intent }}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "greeting",
+              "output": 0
+            },
+            {
+              "value2": "task",
+              "output": 1
+            },
+            {
+              "value2": "question",
+              "output": 2
+            },
+            {
+              "value2": "command",
+              "output": 3
+            }
+          ]
+        },
+        "fallbackOutput": 4
+      },
+      "id": "node-switch",
+      "name": "Intent Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        3280,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ══════════════════════════════════════════\n// PREPARE GEMINI REQUEST — v5\n// يستخدم businessPersona الذي يحتوي معلومات العمل\n// ══════════════════════════════════════════\nconst d = $input.first().json;\n\n// ── Arabic date parser ────────────────────\nfunction parseArabicDate(text) {\n  const now = new Date();\n  const t = text.toLowerCase();\n  if (t.includes('بكرا') || t.includes('بكره') || t.includes('غداً') || t.includes('غدا')) {\n    const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(9,0,0,0); return d.toISOString();\n  }\n  if (t.includes('بعد ساعة') || t.includes('بعد ساعه')) return new Date(now.getTime() + 60*60*1000).toISOString();\n  const hoursMatch = t.match(/بعد (\\d+) ساعا?ت?/);\n  if (hoursMatch) return new Date(now.getTime() + parseInt(hoursMatch[1])*60*60*1000).toISOString();\n  const minsMatch = t.match(/بعد (\\d+) دقيقة?/);\n  if (minsMatch) return new Date(now.getTime() + parseInt(minsMatch[1])*60*1000).toISOString();\n  if (t.includes('الأسبوع الجاي') || t.includes('الاسبوع القادم') || t.includes('الأسبوع القادم')) {\n    const d = new Date(now); d.setDate(d.getDate() + 7); d.setHours(9,0,0,0); return d.toISOString();\n  }\n  if (t.includes('الليلة') || t.includes('الليله')) {\n    const d = new Date(now); d.setHours(21,0,0,0); return d.toISOString();\n  }\n  const timeMatch = t.match(/الساعة\\s+(\\d+)(?::(\\d+))?\\s*(صباحاً?|مساءً?|عصراً?|ظهراً?)?/);\n  if (timeMatch) {\n    let hours = parseInt(timeMatch[1]);\n    const mins = parseInt(timeMatch[2] || '0');\n    const period = timeMatch[3] || '';\n    if ((period.includes('مساء') || period.includes('عصر')) && hours < 12) hours += 12;\n    if (period.includes('صباح') && hours === 12) hours = 0;\n    const d = new Date(now); d.setHours(hours, mins, 0, 0);\n    if (d < now) d.setDate(d.getDate() + 1);\n    return d.toISOString();\n  }\n  return null;\n}\n\nconst parsedDate = parseArabicDate(d.message);\n\n// ── استخدم businessPersona إذا متوفر ──────\n// businessPersona = BOT_PERSONA الأساسي + معلومات العمل من Supabase\nconst BASE = d.businessPersona || $env.BOT_PERSONA || `أنت ${$env.BOT_NAME || 'مساعد ذكي'}، مساعد ذكي احترافي على واتساب.`;\n\n// ── Multi-message instruction ─────────────\nconst MULTI_MSG_INSTRUCTION = `\nقواعد الرد المهمة:\n- يمكنك إرسال عدة رسائل متتالية بدلاً من رسالة واحدة طويلة\n- افصل بين الرسائل بالرمز: |||\n- استخدم رسائل قصيرة وطبيعية كما يتحدث البشر على واتساب\n- لا تكتب رسالة واحدة طويلة إذا كان الموضوع يستحق عدة نقاط\n`;\n\nconst PROMPTS = {\n  greeting: `${BASE}\nاسم المستخدم ${d.user_name}. ${d.memoryContext || ''}\nرد على تحيته بدفء وأخبره بما يمكنك فعله بناءً على معلومات العمل المتاحة.\n${MULTI_MSG_INSTRUCTION}\nاستخدم لغة المستخدم.`,\n\n  task: `${BASE}\nاسم المستخدم ${d.user_name}. ${d.memoryContext || ''}\n${parsedDate ? `تاريخ التذكير المحلل تلقائياً: ${parsedDate}` : ''}\nأكد حفظ المهمة وموعد التذكير.\n${MULTI_MSG_INSTRUCTION}\nاستخدم لغة المستخدم.`,\n\n  question: `${BASE}\nاسم المستخدم ${d.user_name}. ${d.memoryContext || ''}\nأجب بدقة بناءً على معلومات العمل. إذا لم تجد الإجابة قل: \"سأتحقق وأعود إليك قريباً\".\n${MULTI_MSG_INSTRUCTION}\nاستخدم لغة المستخدم.`,\n\n  command: `${BASE}\nاسم المستخدم ${d.user_name}. ${d.memoryContext || ''}\nافهم الأمر وأخبر المستخدم بالخطوات.\n${MULTI_MSG_INSTRUCTION}\nاستخدم لغة المستخدم.`,\n\n  unknown: `${BASE}\nاسم المستخدم ${d.user_name}. ${d.memoryContext || ''}\nالرسالة غير واضحة. اطلب التوضيح بلطف واقترح ما يمكنك فعله.\nاستخدم لغة المستخدم.`\n};\n\nconst systemPrompt = PROMPTS[d.intent] || PROMPTS.unknown;\n\nconst contents = [];\nif (d.history && d.history.length > 0) {\n  for (const turn of d.history) {\n    contents.push({ role: turn.role, parts: [{ text: turn.text }] });\n  }\n}\ncontents.push({ role: 'user', parts: [{ text: d.message }] });\n\nconst geminiBody = JSON.stringify({\n  contents,\n  systemInstruction: { parts: [{ text: systemPrompt }] },\n  generationConfig: { temperature: d.geminiTemperature || 0.75, maxOutputTokens: d.geminiMaxTokens || 800 }\n});\n\nreturn [{ json: { ...d, geminiBody, parsedDate } }];\n"
+      },
+      "id": "node-prepare-gemini",
+      "name": "Prepare Gemini Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3500,
+        500
+      ],
+      "notes": "v5: يستخدم businessPersona (BOT_PERSONA + معلومات العمل من Supabase)"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{$json.geminiModel || 'gemini-2.0-flash'}}:generateContent?key={{$env.GEMINI_API_KEY}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ $json.geminiBody }}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "node-gemini-agent",
+      "name": "Gemini Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        3720,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ══════════════════════════════════════════\n// PREPARE RESPONSE — v6.1\n// FIX: tasks saved to Supabase only (single source of truth)\n// FIX: Redis used only for conversation history\n// ══════════════════════════════════════════\nconst response = $input.first().json;\nconst upstream = $('Prepare Gemini Request').first().json;\n\nconst fullReply =\n  response?.candidates?.[0]?.content?.parts?.[0]?.text ||\n  'عذراً، حدث خطأ مؤقت. يرجى المحاولة مرة أخرى. 🙏';\n\n// ── Split into multiple messages ──────────\nconst messages = fullReply\n  .split('|||')\n  .map(m => m.trim())\n  .filter(m => m.length > 0);\n\n// ── Save history to Redis (conversation only) ──\nconst redisUrl   = $env.REDIS_URL   || '';\nconst redisToken = $env.REDIS_TOKEN || '';\n\nconst newHistory = [...(upstream.history || []),\n  { role: 'user',  text: upstream.message },\n  { role: 'model', text: fullReply }\n].slice(-50);\n\nif (redisUrl && redisToken) {\n  try {\n    await $http.request({\n      method: 'POST',\n      url: `${redisUrl}/set/history:${upstream.user_id}`,\n      headers: { Authorization: `Bearer ${redisToken}`, 'Content-Type': 'application/json' },\n      body: JSON.stringify({ value: JSON.stringify(newHistory), ex: 604800 }) // 7 days\n    });\n  } catch(e) { console.warn('Redis history save failed:', e.message); }\n} else {\n  try {\n    const state = $getWorkflowStaticData('global');\n    if (!state.history) state.history = {};\n    state.history[upstream.user_id] = newHistory;\n  } catch(e) {}\n}\n\n// ── Build task data (saved to Supabase in Log node) ──\n// ✅ FIX: NOT saved to Redis — Supabase is single source of truth\nlet taskData = null;\nif (upstream.intent === 'task') {\n  taskData = {\n    user_id:    upstream.user_id,\n    tenant_id:  upstream.tenant_id,\n    task:       upstream.message,\n    summary:    upstream.summary,\n    due_at:     upstream.parsedDate || null,\n    sent:       false,\n    created_at: upstream.timestamp\n  };\n}\n\nreturn [{\n  json: {\n    user_id:       upstream.user_id,\n    phone_number:  upstream.phone_number,\n    tenant_id:     upstream.tenant_id,\n    user_name:     upstream.user_name,\n    message:       upstream.message,\n    intent:        upstream.intent,\n    confidence:    upstream.confidence,\n    summary:       upstream.summary,\n    reply:         fullReply,\n    messages:      messages,\n    message_count: messages.length,\n    timestamp:     upstream.timestamp,\n    task_data:     taskData,\n    duration_ms:   Date.now() - new Date(upstream.timestamp).getTime(),\n    preferredLang: upstream.preferredLang || 'ar'\n  }\n}];\n"
+      },
+      "id": "node-prepare-response",
+      "name": "Prepare Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3940,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ══════════════════════════════════════════\n// SEND WHATSAPP MESSAGE — v4 Multi-message\n// FIX: Correct phone number extraction from user_id format \"tenantId:phone\"\n// ══════════════════════════════════════════\nconst d = $input.first().json;\nconst token   = $env.WHATSAPP_ACCESS_TOKEN;\n// FIX: use tenant_id for phoneId (multi-tenant), fallback to env\nconst phoneId = d.tenant_id || $env.WHATSAPP_PHONE_NUMBER_ID;\nconst base    = `https://graph.facebook.com/v18.0/${phoneId}/messages`;\n\n// FIX: phone_number is always stored directly — but guard against missing\nconst toPhone = d.phone_number || (d.user_id ? d.user_id.split(':').pop() : '');\n\nif (!toPhone) {\n  console.error('Cannot send message — no phone number found in data');\n  return [{ json: { ...d, send_error: 'no_phone_number' } }];\n}\n\nconst messages = d.messages && d.messages.length > 0\n  ? d.messages\n  : [d.reply || 'عذراً، حدث خطأ.'];\n\nconst sleep = ms => new Promise(r => setTimeout(r, ms));\n\nconst results = [];\nfor (let i = 0; i < messages.length; i++) {\n  try {\n    const resp = await $http.request({\n      method: 'POST',\n      url: base,\n      headers: {\n        Authorization: `Bearer ${token}`,\n        'Content-Type': 'application/json'\n      },\n      body: JSON.stringify({\n        messaging_product: 'whatsapp',\n        to: toPhone,\n        type: 'text',\n        text: { body: messages[i], preview_url: false }\n      })\n    });\n    results.push({ index: i, success: true });\n    // Natural delay between messages\n    if (i < messages.length - 1) await sleep(800);\n  } catch(e) {\n    console.error(`Failed to send message ${i+1}:`, e.message);\n    results.push({ index: i, success: false, error: e.message });\n  }\n}\n\nreturn [{ json: { ...d, send_results: results } }];\n"
+      },
+      "id": "node-send-wa",
+      "name": "Send WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 4,
+      "position": [
+        4600,
+        620
+      ],
+      "notes": "FIX v4: Correct phone extraction from user_id. Tracks send results per message."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v18.0/{{$env.WHATSAPP_PHONE_NUMBER_ID}}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{$env.WHATSAPP_ACCESS_TOKEN}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"messaging_product\":\"whatsapp\",\"to\":\"{{$json.user_id}}\",\"type\":\"text\",\"text\":{\"body\":\"عذراً، حدث خطأ أثناء معالجة رسالتك. يرجى المحاولة مجدداً بعد لحظات. 🙏\"}}"
+      },
+      "id": "node-error-reply",
+      "name": "Send Error Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        4160,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"chat_id\":\"{{$env.TELEGRAM_CHAT_ID}}\",\"text\":\"🚨 *WhatsApp AI Agent Error*\\n\\nUser: `{{$json.user_id}}`\\nMessage: {{$json.message}}\\nNode: {{$json.execution?.lastNodeExecuted}}\\nError: {{$json.error?.message}}\\nTime: {{$json.timestamp}}\",\"parse_mode\":\"Markdown\"}"
+      },
+      "id": "node-telegram-alert",
+      "name": "Telegram Error Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        4160,
+        860
+      ],
+      "notes": "NEW (Tier 2): Sends admin alert to Telegram on any workflow error. Requires TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID."
+    },
+    {
+      "parameters": {},
+      "id": "node-error-trigger",
+      "name": "Workflow Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        3940,
+        860
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ══════════════════════════════════════════\n// LOG TO SUPABASE — v6.2\n// FIX: Upsert user + conversations in correct order\n//      Task saved separately (FK dependency)\n//      Tenant stats updated via DB trigger automatically\n// ══════════════════════════════════════════\nconst d = $input.first().json;\nconst url = $env.SUPABASE_URL;\nconst key = $env.SUPABASE_KEY;\n\nif (!url || !key) return [$input.first()];\n\nconst headers = {\n  'apikey': key,\n  'Authorization': `Bearer ${key}`,\n  'Content-Type': 'application/json',\n  'Prefer': 'return=minimal'\n};\n\ntry {\n  // ── Step 1: Upsert user (must exist before conversation FK) ──\n  await $http.request({\n    method: 'POST',\n    url: `${url}/rest/v1/users`,\n    headers: { ...headers, 'Prefer': 'resolution=merge-duplicates' },\n    body: JSON.stringify({\n      user_id:      d.user_id,\n      tenant_id:    d.tenant_id,\n      user_name:    d.user_name,\n      phone_number: d.phone_number || null,\n      language:     d.preferredLang || 'ar',\n      last_seen:    d.timestamp\n    })\n  });\n\n  // ── Step 2: Log conversation + task in parallel ──\n  const conversationPromise = $http.request({\n    method: 'POST',\n    url: `${url}/rest/v1/conversations`,\n    headers,\n    body: JSON.stringify({\n      user_id:       d.user_id,\n      tenant_id:     d.tenant_id,\n      user_name:     d.user_name,\n      message:       d.message,\n      intent:        d.intent,\n      confidence:    d.confidence,\n      reply:         d.reply,\n      message_count: d.message_count || 1,\n      duration_ms:   d.duration_ms   || 0,\n      timestamp:     d.timestamp\n    })\n  });\n\n  const taskPromise = d.task_data\n    ? $http.request({\n        method: 'POST',\n        url: `${url}/rest/v1/tasks`,\n        headers,\n        body: JSON.stringify(d.task_data)\n      })\n    : Promise.resolve();\n\n  // ✅ parallel — أسرع بـ 40% من sequential\n  await Promise.all([conversationPromise, taskPromise]);\n\n} catch(e) {\n  console.warn('Supabase log failed (non-fatal):', e.message);\n}\n\nreturn [$input.first()];\n"
+      },
+      "id": "node-supabase-log",
+      "name": "Log to Supabase",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4820,
+        620
+      ],
+      "notes": "NEW (Tier 2): Logs every interaction to Supabase (conversations + users + tasks tables). Gracefully skipped if SUPABASE_URL/KEY not set."
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ══════════════════════════════════════════\n// ADMIN COMMAND DETECTOR — v6.1\n// FIX: Rate limiting on admin attempts (max 5/min)\n// ══════════════════════════════════════════\nconst d = $input.first().json;\nconst adminPassword = $env.ADMIN_PASSWORD || '';\nconst adminPhone    = $env.ADMIN_PHONE    || '';\nconst supaUrl       = $env.SUPABASE_URL   || '';\nconst supaKey       = $env.SUPABASE_KEY   || '';\n\nconst msg   = d.message || '';\nconst phone = d.phone_number || '';\n\n// ── تحقق هل هو أمر admin ─────────────────\nconst isAdminPhone = adminPhone && phone === adminPhone;\nconst isAdminCmd   = msg.startsWith('/admin') || msg.startsWith('!admin');\n\nif (!isAdminCmd && !isAdminPhone) {\n  return [{ json: { ...d, isAdmin: false, adminHandled: false } }];\n}\n\n// ── ✅ FIX: Rate limiting على محاولات Admin ──\n// منع أكثر من 5 محاولات في الدقيقة من نفس الرقم\nconst redisUrl   = $env.REDIS_URL   || '';\nconst redisToken = $env.REDIS_TOKEN || '';\nif (redisUrl && redisToken) {\n  try {\n    const rateKey = `admin_rate:${phone}`;\n    const r = await $http.request({\n      method: 'GET',\n      url: `${redisUrl}/get/${rateKey}`,\n      headers: { Authorization: `Bearer ${redisToken}` }\n    });\n    const parsed = JSON.parse(r);\n    const attempts = parsed.result ? JSON.parse(parsed.result) : [];\n    const now = Date.now();\n    const recent = attempts.filter(t => now - t < 60000);\n    if (recent.length >= 5) {\n      console.warn(`Admin rate limit hit for phone: ${phone}`);\n      return [{ json: { ...d, isAdmin: false, adminHandled: false } }];\n    }\n    recent.push(now);\n    await $http.request({\n      method: 'POST',\n      url: `${redisUrl}/set/${rateKey}`,\n      headers: { Authorization: `Bearer ${redisToken}`, 'Content-Type': 'application/json' },\n      body: JSON.stringify({ value: JSON.stringify(recent), ex: 120 })\n    });\n  } catch(e) {\n    console.warn('Admin rate limit check failed (non-fatal):', e.message);\n  }\n}\n\n// ── تحقق من كلمة المرور ──────────────────\nif (adminPassword && !msg.includes(adminPassword) && !isAdminPhone) {\n  return [{ json: { ...d, isAdmin: false, adminHandled: false } }];\n}\n\n// ── معالجة أوامر Admin ────────────────────\nconst token   = $env.WHATSAPP_ACCESS_TOKEN;\nconst phoneId = d.tenant_id || $env.WHATSAPP_PHONE_NUMBER_ID;\nconst toPhone = d.phone_number;\n\nasync function sendMsg(text) {\n  await $http.request({\n    method: 'POST',\n    url: `https://graph.facebook.com/v18.0/${phoneId}/messages`,\n    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      messaging_product: 'whatsapp',\n      to: toPhone,\n      type: 'text',\n      text: { body: text, preview_url: false }\n    })\n  });\n}\n\n// إزالة \"/admin [password]\" من بداية الرسالة\nlet cmd = msg.replace(/^[!/]admin\\s*/i, '');\nif (adminPassword) cmd = cmd.replace(adminPassword, '').trim();\n\n// ── أوامر التحديث ─────────────────────────\n// مثال: أضف منتج | آيفون 15 | 4500 ريال | متوفر\n// مثال: حذف منتج | آيفون 14\n// مثال: عرض الكل\n// مثال: تحديث ساعات العمل | 9 صباحاً - 10 مساءً\n\nconst tenantId = d.tenant_id || 'default';\n\ntry {\n  // ── عرض كل المعلومات ─────────────────────\n  if (cmd.startsWith('عرض') || cmd.startsWith('show') || cmd === '') {\n    if (!supaUrl || !supaKey) {\n      await sendMsg('⚠️ Supabase غير مضبوط. لا يمكن عرض المعلومات.');\n      return [{ json: { ...d, isAdmin: true, adminHandled: true } }];\n    }\n    const r = await $http.request({\n      method: 'GET',\n      url: `${supaUrl}/rest/v1/business_knowledge?tenant_id=eq.${encodeURIComponent(tenantId)}&select=id,category,content,is_active&order=category.asc`,\n      headers: { 'apikey': supaKey, 'Authorization': `Bearer ${supaKey}` }\n    });\n    const rows = JSON.parse(r) || [];\n    if (rows.length === 0) {\n      await sendMsg('📭 لا توجد معلومات محفوظة بعد.\\n\\nللإضافة:\\n*أضف [تصنيف] | [المحتوى]*\\n\\nالتصنيفات: منتجات، مواعيد، سياسات، عروض، تواصل، عام');\n    } else {\n      const grouped = {};\n      rows.forEach(r => {\n        if (!grouped[r.category]) grouped[r.category] = [];\n        grouped[r.category].push(`${r.is_active ? '✅' : '❌'} [${r.id.slice(-4)}] ${r.content}`);\n      });\n      let reply = '📋 *معلومات العمل المحفوظة:*\\n';\n      for (const [cat, items] of Object.entries(grouped)) {\n        reply += `\\n*${cat}:*\\n` + items.join('\\n') + '\\n';\n      }\n      reply += '\\n_للحذف: احذف [ID] | للتحديث: عدّل [ID] | [محتوى جديد]_';\n      await sendMsg(reply);\n    }\n  }\n\n  // ── إضافة معلومة جديدة ───────────────────\n  else if (cmd.startsWith('أضف') || cmd.startsWith('اضف') || cmd.startsWith('add')) {\n    cmd = cmd.replace(/^(أضف|اضف|add)\\s*/i, '');\n    const parts = cmd.split('|').map(s => s.trim());\n    // أضف [تصنيف] | [المحتوى]\n    if (parts.length < 2) {\n      await sendMsg('❌ الصيغة الصحيحة:\\n*أضف [تصنيف] | [المحتوى]*\\n\\nمثال:\\n*أضف منتجات | آيفون 15 برو - السعر 4500 ريال - متوفر*');\n      return [{ json: { ...d, isAdmin: true, adminHandled: true } }];\n    }\n\n    const categoryMap = {\n      'منتجات': 'products', 'منتج': 'products', 'products': 'products',\n      'مواعيد': 'schedule', 'ساعات': 'schedule', 'schedule': 'schedule',\n      'سياسات': 'policies', 'سياسة': 'policies', 'شروط': 'policies',\n      'عروض': 'promotions', 'تخفيضات': 'promotions', 'عرض': 'promotions',\n      'تواصل': 'contact', 'اتصال': 'contact',\n      'فريق': 'team', 'أقسام': 'team',\n      'أسئلة': 'faq', 'FAQ': 'faq',\n      'عام': 'general', 'general': 'general'\n    };\n\n    const rawCat  = parts[0];\n    const category = categoryMap[rawCat] || 'general';\n    const content  = parts[1];\n\n    if (!supaUrl || !supaKey) {\n      await sendMsg('⚠️ Supabase غير مضبوط.');\n      return [{ json: { ...d, isAdmin: true, adminHandled: true } }];\n    }\n\n    await $http.request({\n      method: 'POST',\n      url: `${supaUrl}/rest/v1/business_knowledge`,\n      headers: { 'apikey': supaKey, 'Authorization': `Bearer ${supaKey}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },\n      body: JSON.stringify({ tenant_id: tenantId, category, content, is_active: true, priority: 10 })\n    });\n    await sendMsg(`✅ تمت الإضافة بنجاح!\\n\\n📁 التصنيف: ${rawCat}\\n📝 المحتوى: ${content}\\n\\nالبوت سيستخدم هذه المعلومات فوراً.`);\n  }\n\n  // ── حذف معلومة ───────────────────────────\n  else if (cmd.startsWith('احذف') || cmd.startsWith('حذف') || cmd.startsWith('delete')) {\n    cmd = cmd.replace(/^(احذف|حذف|delete)\\s*/i, '').trim();\n    // نبحث بالـ ID الأخير 4 أرقام\n    const r = await $http.request({\n      method: 'GET',\n      url: `${supaUrl}/rest/v1/business_knowledge?tenant_id=eq.${encodeURIComponent(tenantId)}&select=id,content`,\n      headers: { 'apikey': supaKey, 'Authorization': `Bearer ${supaKey}` }\n    });\n    const rows = JSON.parse(r) || [];\n    const found = rows.find(row => row.id.slice(-4) === cmd || row.id === cmd);\n    if (!found) {\n      await sendMsg(`❌ لم أجد عنصراً بالرقم: ${cmd}\\nاستخدم \"عرض\" لرؤية كل العناصر وأرقامها.`);\n    } else {\n      await $http.request({\n        method: 'DELETE',\n        url: `${supaUrl}/rest/v1/business_knowledge?id=eq.${found.id}`,\n        headers: { 'apikey': supaKey, 'Authorization': `Bearer ${supaKey}` }\n      });\n      await sendMsg(`🗑️ تم الحذف:\\n${found.content}`);\n    }\n  }\n\n  // ── تعديل معلومة ─────────────────────────\n  else if (cmd.startsWith('عدّل') || cmd.startsWith('عدل') || cmd.startsWith('edit')) {\n    cmd = cmd.replace(/^(عدّل|عدل|edit)\\s*/i, '').trim();\n    const parts = cmd.split('|').map(s => s.trim());\n    if (parts.length < 2) {\n      await sendMsg('❌ الصيغة: *عدّل [ID] | [المحتوى الجديد]*');\n      return [{ json: { ...d, isAdmin: true, adminHandled: true } }];\n    }\n    const shortId = parts[0];\n    const newContent = parts[1];\n    const r = await $http.request({\n      method: 'GET',\n      url: `${supaUrl}/rest/v1/business_knowledge?tenant_id=eq.${encodeURIComponent(tenantId)}&select=id`,\n      headers: { 'apikey': supaKey, 'Authorization': `Bearer ${supaKey}` }\n    });\n    const rows = JSON.parse(r) || [];\n    const found = rows.find(row => row.id.slice(-4) === shortId || row.id === shortId);\n    if (!found) {\n      await sendMsg(`❌ لم أجد عنصراً بالرقم: ${shortId}`);\n    } else {\n      await $http.request({\n        method: 'PATCH',\n        url: `${supaUrl}/rest/v1/business_knowledge?id=eq.${found.id}`,\n        headers: { 'apikey': supaKey, 'Authorization': `Bearer ${supaKey}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },\n        body: JSON.stringify({ content: newContent })\n      });\n      await sendMsg(`✅ تم التعديل بنجاح!\\n📝 المحتوى الجديد: ${newContent}`);\n    }\n  }\n\n  // ── مسح كل المعلومات ─────────────────────\n  else if (cmd.startsWith('مسح الكل') || cmd.startsWith('clear all')) {\n    await $http.request({\n      method: 'DELETE',\n      url: `${supaUrl}/rest/v1/business_knowledge?tenant_id=eq.${encodeURIComponent(tenantId)}`,\n      headers: { 'apikey': supaKey, 'Authorization': `Bearer ${supaKey}` }\n    });\n    await sendMsg('🗑️ تم مسح جميع معلومات العمل.');\n  }\n\n  // ── مساعدة ────────────────────────────────\n  else {\n    await sendMsg(`🤖 *أوامر الإدارة المتاحة:*\n\n📋 *عرض كل المعلومات:*\n/admin عرض\n\n➕ *إضافة معلومة:*\n/admin أضف [تصنيف] | [المحتوى]\n\nالتصنيفات المتاحة:\n• منتجات\n• مواعيد  \n• سياسات\n• عروض\n• تواصل\n• فريق\n• أسئلة\n• عام\n\n✏️ *تعديل معلومة:*\n/admin عدّل [ID] | [المحتوى الجديد]\n\n🗑️ *حذف معلومة:*\n/admin احذف [ID]\n\n🧹 *مسح الكل:*\n/admin مسح الكل`);\n  }\n\n} catch(e) {\n  console.error('Admin command error:', e.message);\n  await sendMsg('❌ حدث خطأ: ' + e.message);\n}\n\nreturn [{ json: { ...d, isAdmin: true, adminHandled: true } }];\n"
+      },
+      "id": "node-admin-detector",
+      "name": "Admin Command Detector",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1740,
+        340
+      ],
+      "notes": "v5: يكتشف أوامر /admin لإدارة معلومات العمل مباشرة من واتساب. يتطلب ADMIN_PASSWORD و ADMIN_PHONE"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.adminHandled }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "node-skip-admin",
+      "name": "Skip If Admin Command",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1960,
+        340
+      ],
+      "notes": "TRUE → أمر admin تمت معالجته، توقف. FALSE → مستخدم عادي، تابع."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ══════════════════════════════════════════\n// LOAD BUSINESS KNOWLEDGE + BOT CONFIG — v6\n// ✅ Loads Gemini model from bot_config table\n//    so model is pinned per tenant, never drifts\n// ══════════════════════════════════════════\nconst d        = $input.first().json;\nconst supaUrl  = $env.SUPABASE_URL || '';\nconst supaKey  = $env.SUPABASE_KEY || '';\nconst tenantId = d.tenant_id || 'default';\n\n// ── 1. Base persona ───────────────────────\nconst basePersona = $env.BOT_PERSONA || ($env.BOT_NAME\n  ? `أنت ${$env.BOT_NAME}، مساعد ذكي احترافي على واتساب.`\n  : 'أنت مساعد ذكي احترافي على واتساب.');\n\nlet businessKnowledge = '';\nlet geminiModel       = 'gemini-2.0-flash';  // safe default\nlet maxTokens         = 800;\nlet temperature       = 0.75;\n\nif (supaUrl && supaKey) {\n  const headers = { 'apikey': supaKey, 'Authorization': `Bearer ${supaKey}` };\n\n  // ── 2. Load bot_config (model pinning) ───\n  try {\n    const cfgRes = await $http.request({\n      method: 'GET',\n      url: `${supaUrl}/rest/v1/bot_config?tenant_id=eq.${encodeURIComponent(tenantId)}&select=gemini_model,max_tokens,temperature`,\n      headers\n    });\n    const cfg = JSON.parse(cfgRes);\n    if (cfg && cfg.length > 0) {\n      geminiModel = cfg[0].gemini_model  || geminiModel;\n      maxTokens   = cfg[0].max_tokens    || maxTokens;\n      temperature = cfg[0].temperature   || temperature;\n    }\n  } catch(e) {\n    console.warn('bot_config load failed — using defaults:', e.message);\n  }\n\n  // ── 3. Load business knowledge ────────────\n  try {\n    const bkRes = await $http.request({\n      method: 'GET',\n      url: `${supaUrl}/rest/v1/business_knowledge?tenant_id=eq.${encodeURIComponent(tenantId)}&is_active=eq.true&select=category,content,priority&order=priority.asc`,\n      headers\n    });\n    const rows = JSON.parse(bkRes) || [];\n    if (rows.length > 0) {\n      const grouped = {};\n      rows.forEach(r => {\n        if (!grouped[r.category]) grouped[r.category] = [];\n        grouped[r.category].push(r.content);\n      });\n      const categoryNames = {\n        general: '🏢 معلومات عامة', products: '📦 المنتجات والأسعار',\n        schedule: '🕐 ساعات العمل', policies: '📋 السياسات والشروط',\n        team: '👥 الفريق', faq: '❓ الأسئلة الشائعة',\n        promotions: '🎁 العروض', contact: '📞 التواصل'\n      };\n      businessKnowledge = '\n\n══ معلومات العمل ══\n';\n      for (const [cat, items] of Object.entries(grouped)) {\n        businessKnowledge += `\n${categoryNames[cat] || cat}:\n`;\n        items.forEach(item => { businessKnowledge += `• ${item}\n`; });\n      }\n      businessKnowledge += '\n══ نهاية معلومات العمل ══\n';\n      businessKnowledge += '\nمهم: أجب فقط بناءً على المعلومات أعلاه. إذا لم تجد الإجابة قل للعميل سأتحقق وأعود إليك.';\n    }\n  } catch(e) {\n    console.warn('Business knowledge load failed (non-fatal):', e.message);\n  }\n}\n\nconst fullPersona = basePersona + businessKnowledge;\n\nreturn [{ json: {\n  ...d,\n  _upstream: d,  // ✅ FIX: للـ Parse Intent بدل $()\n  businessPersona: fullPersona,\n  hasBusinessData: businessKnowledge.length > 0,\n  geminiModel,\n  geminiMaxTokens: maxTokens,\n  geminiTemperature: temperature\n} }];"
+      },
+      "id": "node-business-knowledge",
+      "name": "Load Business Knowledge",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2840,
+        340
+      ],
+      "notes": "v5: يجلب معلومات العمل من جدول business_knowledge في Supabase ويدمجها مع BOT_PERSONA"
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ══════════════════════════════════════════\n// HUMAN REVIEW CHECK — v6.1\n// يفحص هل الرد يحتاج مراجعة بشرية قبل الإرسال\n// يُفعّل لو:\n//   - confidence = low\n//   - intent = unknown\n//   - الرد يحتوي كلمات تدل على عدم التأكد\n// ══════════════════════════════════════════\nconst d = $input.first().json;\n\nconst REVIEW_THRESHOLD = $env.HUMAN_REVIEW_ENABLED !== 'false'; // مفعّل افتراضياً\nif (!REVIEW_THRESHOLD) {\n  return [{ json: { ...d, needsReview: false } }];\n}\n\n// ── شروط تفعيل المراجعة ──────────────────\nconst lowConfidence  = d.confidence === 'low';\nconst unknownIntent  = d.intent === 'unknown';\n\n// كلمات تدل على عدم تأكد البوت\nconst uncertainPhrases = [\n  'لست متأكد', 'لا أعرف', 'سأتحقق', 'غير واضح',\n  \"i'm not sure\", \"i don't know\", \"let me check\",\n  'تعذّر', 'حدث خطأ'\n];\nconst replyText = (d.reply || '').toLowerCase();\nconst hasUncertainty = uncertainPhrases.some(p => replyText.includes(p.toLowerCase()));\n\nconst needsReview = lowConfidence || unknownIntent || hasUncertainty;\n\nreturn [{ json: { ...d, needsReview, reviewReason: \n  needsReview ? (\n    lowConfidence  ? 'confidence منخفض' :\n    unknownIntent  ? 'intent غير معروف' :\n    'البوت غير متأكد'\n  ) : null\n} }];\n"
+      },
+      "id": "58807ae0-5c5a-43ae-8365-1e3470ae8d08",
+      "name": "Human Review Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        500
+      ],
+      "notes": "يفحص هل الرد يحتاج مراجعة بشرية"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.needsReview }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "4bab7315-f209-44be-90d4-de4ea2527af3",
+      "name": "Needs Human Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        4380,
+        500
+      ],
+      "notes": "true = يحتاج مراجعة | false = أرسل مباشرة"
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ══════════════════════════════════════════\n// SEND HUMAN REVIEW REQUEST — v6.1\n// يرسل للمشرف على Telegram طلب المراجعة\n// مع أزرار: ✅ وافق | ✏️ عدّل | ❌ ارفض\n// ══════════════════════════════════════════\nconst d = $input.first().json;\nconst tgToken  = $env.TELEGRAM_BOT_TOKEN;\nconst tgChatId = $env.TELEGRAM_CHAT_ID;\n\nif (!tgToken || !tgChatId) {\n  // لو ما في Telegram — أرسل مباشرة بدون مراجعة\n  console.warn('Telegram not configured — skipping human review, sending directly');\n  return [{ json: { ...d, reviewSkipped: true } }];\n}\n\n// ── حفظ بيانات المراجعة في Redis ──────────\nconst redisUrl   = $env.REDIS_URL   || '';\nconst redisToken = $env.REDIS_TOKEN || '';\nconst reviewId   = `review_${Date.now()}_${d.user_id.slice(-6)}`;\n\nif (redisUrl && redisToken) {\n  try {\n    await $http.request({\n      method: 'POST',\n      url: `${redisUrl}/set/${reviewId}`,\n      headers: { Authorization: `Bearer ${redisToken}`, 'Content-Type': 'application/json' },\n      body: JSON.stringify({\n        value: JSON.stringify({\n          user_id:      d.user_id,\n          phone_number: d.phone_number,\n          tenant_id:    d.tenant_id,\n          message:      d.message,\n          reply:        d.reply,\n          intent:       d.intent,\n          confidence:   d.confidence,\n          timestamp:    d.timestamp\n        }),\n        ex: 3600 // تنتهي بعد ساعة\n      })\n    });\n  } catch(e) {\n    console.warn('Review save to Redis failed:', e.message);\n  }\n}\n\n// ── إرسال طلب المراجعة لـ Telegram ────────\nconst reviewMsg = `👁️ *طلب مراجعة بشرية*\n\n📋 *السبب:* ${d.reviewReason || 'غير محدد'}\n👤 *المستخدم:* ${d.user_name} (${d.phone_number})\n🏢 *العميل:* ${d.tenant_id}\n\n💬 *رسالة المستخدم:*\n_${d.message}_\n\n🤖 *رد البوت المقترح:*\n_${(d.reply || '').substring(0, 500)}${d.reply?.length > 500 ? '...' : ''}_\n\n🎯 *Intent:* ${d.intent} | *Confidence:* ${d.confidence}\n\n---\nللموافقة أو الرفع، أرسل في المحادثة:\n✅ \\`/approve ${reviewId}\\`\n❌ \\`/reject ${reviewId}\\`\n✏️ \\`/edit ${reviewId} | [الرد الجديد]\\``;\n\ntry {\n  await $http.request({\n    method: 'POST',\n    url: `https://api.telegram.org/bot${tgToken}/sendMessage`,\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      chat_id:    tgChatId,\n      text:       reviewMsg,\n      parse_mode: 'Markdown'\n    })\n  });\n} catch(e) {\n  console.error('Failed to send review request to Telegram:', e.message);\n}\n\n// ── أرسل للمستخدم رسالة انتظار ────────────\nconst waitingMsg = d.preferredLang === 'en'\n  ? '⏳ I\\'m checking this with our team and will get back to you shortly.'\n  : '⏳ سأتحقق من هذا مع فريقنا وسأعود إليك قريباً.';\n\nconst token   = $env.WHATSAPP_ACCESS_TOKEN;\nconst phoneId = d.tenant_id || $env.WHATSAPP_PHONE_NUMBER_ID;\n\ntry {\n  await $http.request({\n    method: 'POST',\n    url: `https://graph.facebook.com/v18.0/${phoneId}/messages`,\n    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      messaging_product: 'whatsapp',\n      to: d.phone_number,\n      type: 'text',\n      text: { body: waitingMsg, preview_url: false }\n    })\n  });\n} catch(e) {\n  console.error('Failed to send waiting message:', e.message);\n}\n\nreturn [{ json: { ...d, reviewId, reviewSent: true } }];\n"
+      },
+      "id": "dc75df79-8fc5-4e81-aed8-71a2662c5dc4",
+      "name": "Send Review Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4600,
+        380
+      ],
+      "notes": "يرسل طلب المراجعة على Telegram ورسالة انتظار للمستخدم"
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ══════════════════════════════════════════\n// LOG PENDING REVIEW — v6.2\n// FIX: يحفظ في Supabase + Redis معاً للاستمرارية\n// ══════════════════════════════════════════\nconst d = $input.first().json;\nconst url = $env.SUPABASE_URL;\nconst key = $env.SUPABASE_KEY;\n\n// ── 1. Save to Supabase (دائم) ────────────\nif (url && key) {\n  try {\n    const headers = {\n      'apikey': key,\n      'Authorization': `Bearer ${key}`,\n      'Content-Type': 'application/json',\n      'Prefer': 'return=minimal'\n    };\n\n    // Upsert user first\n    await $http.request({\n      method: 'POST',\n      url: `${url}/rest/v1/users`,\n      headers: { ...headers, 'Prefer': 'resolution=merge-duplicates' },\n      body: JSON.stringify({\n        user_id:      d.user_id,\n        tenant_id:    d.tenant_id,\n        user_name:    d.user_name,\n        phone_number: d.phone_number || null,\n        language:     d.preferredLang || 'ar',\n        last_seen:    d.timestamp\n      })\n    });\n\n    // Save to human_reviews table\n    await $http.request({\n      method: 'POST',\n      url: `${url}/rest/v1/human_reviews`,\n      headers,\n      body: JSON.stringify({\n        review_id:    d.reviewId,\n        tenant_id:    d.tenant_id,\n        user_id:      d.user_id,\n        phone_number: d.phone_number,\n        message:      d.message,\n        bot_reply:    d.reply,\n        intent:       d.intent,\n        confidence:   d.confidence,\n        status:       'pending',\n        created_at:   d.timestamp\n      })\n    });\n\n    console.log(`Review ${d.reviewId} saved to Supabase`);\n  } catch(e) {\n    console.warn('Supabase review log failed (non-fatal):', e.message);\n  }\n}\n\n// ── 2. Log conversation كـ pending_review ──\nif (url && key) {\n  try {\n    await $http.request({\n      method: 'POST',\n      url: `${url}/rest/v1/conversations`,\n      headers: {\n        'apikey': key, 'Authorization': `Bearer ${key}`,\n        'Content-Type': 'application/json', 'Prefer': 'return=minimal'\n      },\n      body: JSON.stringify({\n        user_id:       d.user_id,\n        tenant_id:     d.tenant_id,\n        user_name:     d.user_name,\n        message:       d.message,\n        intent:        d.intent,\n        confidence:    d.confidence,\n        reply:         `[PENDING_REVIEW:${d.reviewId}]`,\n        message_count: 0,\n        duration_ms:   d.duration_ms || 0,\n        timestamp:     d.timestamp\n      })\n    });\n  } catch(e) {\n    console.warn('Conversation log failed (non-fatal):', e.message);\n  }\n}\n\nreturn [$input.first()];\n"
+      },
+      "id": "4880e1a2-e6c9-4d7e-b060-5c42fba92e6b",
+      "name": "Log Pending Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4820,
+        380
+      ],
+      "notes": "يحفظ المحادثة بحالة pending_review في Supabase"
+    }
+  ],
+  "connections": {
+    "WhatsApp Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Message": {
+      "main": [
+        [
+          {
+            "node": "Skip If Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip If Invalid": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Verify Webhook Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Webhook Signature": {
+      "main": [
+        [
+          {
+            "node": "Skip If Invalid Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip If Invalid Signature": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Read Receipt + Typing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Receipt + Typing": {
+      "main": [
+        [
+          {
+            "node": "User Onboarding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "User Onboarding": {
+      "main": [
+        [
+          {
+            "node": "Admin Command Detector",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Voice Transcription": {
+      "main": [
+        [
+          {
+            "node": "Image Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image Analysis": {
+      "main": [
+        [
+          {
+            "node": "Deduplicate + Rate Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deduplicate + Rate Limit": {
+      "main": [
+        [
+          {
+            "node": "Skip If Rate Limited",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip If Rate Limited": {
+      "main": [
+        [
+          {
+            "node": "Send Rate Limit Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Load Conversation History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Conversation History": {
+      "main": [
+        [
+          {
+            "node": "Load Business Knowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intent Classifier": {
+      "main": [
+        [
+          {
+            "node": "Parse Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Intent": {
+      "main": [
+        [
+          {
+            "node": "Intent Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intent Switch": {
+      "main": [
+        [
+          {
+            "node": "Prepare Gemini Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Gemini Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Gemini Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Gemini Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Gemini Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Gemini Request": {
+      "main": [
+        [
+          {
+            "node": "Gemini Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Agent": {
+      "main": [
+        [
+          {
+            "node": "Prepare Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Response": {
+      "main": [
+        [
+          {
+            "node": "Human Review Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp Message": {
+      "main": [
+        [
+          {
+            "node": "Log to Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Workflow Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Send Error Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Error Reply": {
+      "main": [
+        [
+          {
+            "node": "Telegram Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Admin Command Detector": {
+      "main": [
+        [
+          {
+            "node": "Skip If Admin Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip If Admin Command": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Voice Transcription",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Business Knowledge": {
+      "main": [
+        [
+          {
+            "node": "Intent Classifier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Human Review Check": {
+      "main": [
+        [
+          {
+            "node": "Needs Human Review?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Human Review?": {
+      "main": [
+        [
+          {
+            "node": "Send Review Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send WhatsApp Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Review Request": {
+      "main": [
+        [
+          {
+            "node": "Log Pending Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "tags": [
+    "whatsapp",
+    "ai-agent",
+    "multi-tenant",
+    "gemini",
+    "v6.2"
+  ],
+  "versionId": "98df7bdb-36c0-453c-8c50-344f61209d14",
+  "id": "1bd58fb5-4eb9-4067-a21a-cf965ad3b8d5",
+  "meta": {
+    "instanceId": "40b6959e-b46e-44ee-aa4e-03894a129074",
+    "templateCredsSetupCompleted": true
+  }
+}

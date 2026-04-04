@@ -1,0 +1,281 @@
+{
+  "_readme": "اختبر البوت بهذه البيانات قبل الربط بـ Meta | Use these payloads to test the bot before connecting to Meta",
+  "_how_to_use": "في n8n افتح الـ workflow → اضغط Test Workflow → الصق أي payload من هنا | In n8n open workflow → click Test Workflow → paste any payload below",
+
+  "test_cases": [
+
+    {
+      "_id": "T01",
+      "_description": "تحية بسيطة | Simple greeting",
+      "_intent_expected": "greeting",
+      "object": "whatsapp_business_account",
+      "entry": [{
+        "id": "TENANT_001",
+        "changes": [{
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": { "display_phone_number": "966500000001", "phone_number_id": "PHONE_NUMBER_ID" },
+            "contacts": [{ "profile": { "name": "أحمد التجريبي" }, "wa_id": "966501111111" }],
+            "messages": [{
+              "from": "966501111111",
+              "id": "wamid.TEST_T01",
+              "timestamp": "1700000001",
+              "type": "text",
+              "text": { "body": "السلام عليكم" }
+            }]
+          },
+          "field": "messages"
+        }]
+      }]
+    },
+
+    {
+      "_id": "T02",
+      "_description": "سؤال عن منتج | Product question",
+      "_intent_expected": "question",
+      "object": "whatsapp_business_account",
+      "entry": [{
+        "id": "TENANT_001",
+        "changes": [{
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": { "display_phone_number": "966500000001", "phone_number_id": "PHONE_NUMBER_ID" },
+            "contacts": [{ "profile": { "name": "أحمد التجريبي" }, "wa_id": "966501111111" }],
+            "messages": [{
+              "from": "966501111111",
+              "id": "wamid.TEST_T02",
+              "timestamp": "1700000002",
+              "type": "text",
+              "text": { "body": "كم سعر الآيفون 15 برو؟" }
+            }]
+          },
+          "field": "messages"
+        }]
+      }]
+    },
+
+    {
+      "_id": "T03",
+      "_description": "طلب تذكير بالعربية — بكرا | Arabic reminder — tomorrow",
+      "_intent_expected": "task",
+      "_expected_parsed_date": "tomorrow at 09:00",
+      "object": "whatsapp_business_account",
+      "entry": [{
+        "id": "TENANT_001",
+        "changes": [{
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": { "display_phone_number": "966500000001", "phone_number_id": "PHONE_NUMBER_ID" },
+            "contacts": [{ "profile": { "name": "أحمد التجريبي" }, "wa_id": "966501111111" }],
+            "messages": [{
+              "from": "966501111111",
+              "id": "wamid.TEST_T03",
+              "timestamp": "1700000003",
+              "type": "text",
+              "text": { "body": "ذكرني بكرا أحول الإيجار" }
+            }]
+          },
+          "field": "messages"
+        }]
+      }]
+    },
+
+    {
+      "_id": "T04",
+      "_description": "طلب تذكير — بعد ساعتين | Reminder — in 2 hours",
+      "_intent_expected": "task",
+      "_expected_parsed_date": "now + 2 hours",
+      "object": "whatsapp_business_account",
+      "entry": [{
+        "id": "TENANT_001",
+        "changes": [{
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": { "display_phone_number": "966500000001", "phone_number_id": "PHONE_NUMBER_ID" },
+            "contacts": [{ "profile": { "name": "أحمد التجريبي" }, "wa_id": "966501111111" }],
+            "messages": [{
+              "from": "966501111111",
+              "id": "wamid.TEST_T04",
+              "timestamp": "1700000004",
+              "type": "text",
+              "text": { "body": "ذكرني بعد ساعتين أتصل بالدكتور" }
+            }]
+          },
+          "field": "messages"
+        }]
+      }]
+    },
+
+    {
+      "_id": "T05",
+      "_description": "طلب تذكير — الساعة 3 مساءً | Reminder — at 3pm",
+      "_intent_expected": "task",
+      "_expected_parsed_date": "today at 15:00",
+      "object": "whatsapp_business_account",
+      "entry": [{
+        "id": "TENANT_001",
+        "changes": [{
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": { "display_phone_number": "966500000001", "phone_number_id": "PHONE_NUMBER_ID" },
+            "contacts": [{ "profile": { "name": "أحمد التجريبي" }, "wa_id": "966501111111" }],
+            "messages": [{
+              "from": "966501111111",
+              "id": "wamid.TEST_T05",
+              "timestamp": "1700000005",
+              "type": "text",
+              "text": { "body": "ذكرني الساعة 3 مساءً أخذ الدواء" }
+            }]
+          },
+          "field": "messages"
+        }]
+      }]
+    },
+
+    {
+      "_id": "T06",
+      "_description": "رسالة غير واضحة | Unknown intent",
+      "_intent_expected": "unknown",
+      "object": "whatsapp_business_account",
+      "entry": [{
+        "id": "TENANT_001",
+        "changes": [{
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": { "display_phone_number": "966500000001", "phone_number_id": "PHONE_NUMBER_ID" },
+            "contacts": [{ "profile": { "name": "أحمد التجريبي" }, "wa_id": "966501111111" }],
+            "messages": [{
+              "from": "966501111111",
+              "id": "wamid.TEST_T06",
+              "timestamp": "1700000006",
+              "type": "text",
+              "text": { "body": "asdfghjkl" }
+            }]
+          },
+          "field": "messages"
+        }]
+      }]
+    },
+
+    {
+      "_id": "T07",
+      "_description": "رسالة مكررة — اختبار deduplication | Duplicate message test",
+      "_note": "أرسل هذا مرتين — المرة الثانية يجب أن تُتجاهل | Send this twice — second should be ignored",
+      "object": "whatsapp_business_account",
+      "entry": [{
+        "id": "TENANT_001",
+        "changes": [{
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": { "display_phone_number": "966500000001", "phone_number_id": "PHONE_NUMBER_ID" },
+            "contacts": [{ "profile": { "name": "أحمد التجريبي" }, "wa_id": "966501111111" }],
+            "messages": [{
+              "from": "966501111111",
+              "id": "wamid.TEST_DEDUP_SAME_ID",
+              "timestamp": "1700000007",
+              "type": "text",
+              "text": { "body": "هل عندكم ضمان على المنتجات؟" }
+            }]
+          },
+          "field": "messages"
+        }]
+      }]
+    },
+
+    {
+      "_id": "T08",
+      "_description": "توقيع webhook خاطئ — اختبار الأمان | Invalid webhook signature",
+      "_note": "أضف header: x-hub-signature-256: sha256=INVALID — يجب أن يُرفض | Add header x-hub-signature-256: sha256=INVALID — should be rejected",
+      "_expected_result": "skip: true, reason: invalid_signature",
+      "object": "whatsapp_business_account",
+      "entry": [{
+        "id": "TENANT_001",
+        "changes": [{
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": { "display_phone_number": "966500000001", "phone_number_id": "PHONE_NUMBER_ID" },
+            "contacts": [{ "profile": { "name": "مخترق" }, "wa_id": "966509999999" }],
+            "messages": [{
+              "from": "966509999999",
+              "id": "wamid.TEST_T08",
+              "timestamp": "1700000008",
+              "type": "text",
+              "text": { "body": "رسالة مزيفة" }
+            }]
+          },
+          "field": "messages"
+        }]
+      }]
+    },
+
+    {
+      "_id": "T09",
+      "_description": "tenant مختلف — اختبار multi-tenant | Different tenant test",
+      "_note": "غيّر entry.id لـ TENANT_002 وتأكد إن البوت يستخدم إعدادات مختلفة | Change entry.id to TENANT_002",
+      "object": "whatsapp_business_account",
+      "entry": [{
+        "id": "TENANT_002",
+        "changes": [{
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": { "display_phone_number": "966500000002", "phone_number_id": "PHONE_NUMBER_ID_2" },
+            "contacts": [{ "profile": { "name": "فاطمة التجريبية" }, "wa_id": "966502222222" }],
+            "messages": [{
+              "from": "966502222222",
+              "id": "wamid.TEST_T09",
+              "timestamp": "1700000009",
+              "type": "text",
+              "text": { "body": "ما هي ساعات العمل؟" }
+            }]
+          },
+          "field": "messages"
+        }]
+      }]
+    },
+
+    {
+      "_id": "T10",
+      "_description": "webhook verification handshake من Meta | Meta webhook verification",
+      "_note": "استخدم GET request مع هذه الـ query params | Use GET request with these query params",
+      "_method": "GET",
+      "_query_params": {
+        "hub.mode": "subscribe",
+        "hub.verify_token": "YOUR_VERIFY_TOKEN",
+        "hub.challenge": "123456789"
+      },
+      "_expected_result": "يرجع hub.challenge كـ plain text | Should return hub.challenge as plain text"
+    }
+
+  ],
+
+  "sample_tenants": {
+    "_description": "أدخل هذه البيانات في Supabase لاختبار multi-tenant | Insert these into Supabase to test multi-tenant",
+    "sql": "INSERT INTO tenants (tenant_id, name, phone_number, bot_name, plan) VALUES ('TENANT_001', 'متجر النور للإلكترونيات', '966500000001', 'نور', 'pro'), ('TENANT_002', 'مطعم الأصالة', '966500000002', 'أصيل', 'starter') ON CONFLICT DO NOTHING;"
+  },
+
+  "sample_bot_config": {
+    "_description": "إعدادات البوت لكل tenant | Bot config per tenant",
+    "sql": "INSERT INTO bot_config (tenant_id, gemini_model, max_tokens, temperature) VALUES ('TENANT_001', 'gemini-2.0-flash', 1024, 0.7), ('TENANT_002', 'gemini-2.0-flash', 512, 0.5) ON CONFLICT DO NOTHING;"
+  },
+
+  "sample_business_knowledge": {
+    "_description": "بيانات العمل التجريبية | Sample business knowledge",
+    "sql": "INSERT INTO business_knowledge (tenant_id, category, content, priority) VALUES ('TENANT_001', 'general', 'متجر النور للإلكترونيات — نخدمكم منذ 2015', 1), ('TENANT_001', 'products', 'آيفون 15 برو — السعر 4500 ريال — متوفر', 2), ('TENANT_001', 'products', 'سامسونج S24 — السعر 3200 ريال — نفذ من المخزون', 3), ('TENANT_001', 'schedule', 'ساعات العمل: 9 صباحاً حتى 10 مساءً — كل أيام الأسبوع', 4), ('TENANT_001', 'policies', 'الشحن مجاني للطلبات فوق 500 ريال — يصل خلال 3 أيام', 5), ('TENANT_001', 'policies', 'سياسة الإرجاع: 14 يوم من تاريخ الاستلام', 6), ('TENANT_001', 'contact', 'للتواصل المباشر: 0501234567', 7), ('TENANT_002', 'general', 'مطعم الأصالة — أكل شعبي أصيل منذ 1998', 1), ('TENANT_002', 'products', 'وجبة كبسة لحم — 45 ريال', 2), ('TENANT_002', 'schedule', 'أوقات العمل: 12 ظهراً حتى 12 منتصف الليل', 3) ON CONFLICT DO NOTHING;"
+  },
+
+  "checklist": {
+    "_description": "قائمة التحقق قبل الربط بـ Meta | Pre-launch checklist",
+    "steps": [
+      "✅ T01 — البوت يرد على التحية",
+      "✅ T02 — البوت يجيب على سؤال المنتج من business_knowledge",
+      "✅ T03 — التذكير يُحفظ في جدول tasks مع due_at صحيح",
+      "✅ T04 — التاريخ المحلل صحيح (بعد ساعتين)",
+      "✅ T05 — التاريخ المحلل صحيح (الساعة 3 مساءً)",
+      "✅ T06 — الرسالة الغير واضحة تحصل على رد مناسب",
+      "✅ T07 — الرسالة المكررة لا تحصل على ردين",
+      "✅ T08 — التوقيع الخاطئ يُرفض",
+      "✅ T09 — كل tenant يحصل على إعداداته الخاصة",
+      "✅ T10 — الـ webhook verification يرجع الـ challenge"
+    ]
+  }
+}

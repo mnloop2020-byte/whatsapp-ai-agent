@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WhatsApp AI Agent — لوحة التحكم</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg:       #0a0f1e;
+    --surface:  #111827;
+    --card:     #1a2235;
+    --border:   #1e2d45;
+    --green:    #25d366;
+    --blue:     #3b82f6;
+    --purple:   #8b5cf6;
+    --orange:   #f59e0b;
+    --red:      #ef4444;
+    --text:     #f1f5f9;
+    --muted:    #64748b;
+    --glow-g:   rgba(37,211,102,0.15);
+    --glow-b:   rgba(59,130,246,0.15);
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+  }
+
+  /* ── Topbar ── */
+  .topbar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    font-size: 16px;
+  }
+  .logo .dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 10px var(--green);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .live-badge {
+    background: rgba(37,211,102,0.15);
+    color: var(--green);
+    border: 1px solid rgba(37,211,102,0.3);
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  /* ── Layout ── */
+  .layout {
+    display: flex;
+    min-height: calc(100vh - 60px);
+  }
+
+  .sidebar {
+    width: 220px;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    padding: 20px 0;
+    flex-shrink: 0;
+  }
+  .sidebar-section {
+    padding: 8px 16px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 8px;
+  }
+  .sidebar-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 20px;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 14px;
+    transition: all 0.2s;
+    border-right: 3px solid transparent;
+  }
+  .sidebar-item:hover, .sidebar-item.active {
+    background: rgba(59,130,246,0.08);
+    color: var(--text);
+    border-right-color: var(--blue);
+  }
+  .sidebar-item.active { color: var(--blue); }
+
+  .main {
+    flex: 1;
+    padding: 24px;
+    overflow-x: hidden;
+  }
+
+  /* ── Page header ── */
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+  }
+  .page-title { font-size: 22px; font-weight: 700; }
+  .page-subtitle { color: var(--muted); font-size: 13px; margin-top: 2px; }
+
+  .btn {
+    padding: 8px 16px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: all 0.2s;
+  }
+  .btn-primary {
+    background: var(--blue);
+    color: white;
+  }
+  .btn-primary:hover { background: #2563eb; transform: translateY(-1px); }
+
+  /* ── KPI Cards ── */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .kpi-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .kpi-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+  }
+  .kpi-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+  }
+  .kpi-card.green::before { background: var(--green); box-shadow: 0 0 10px var(--green); }
+  .kpi-card.blue::before  { background: var(--blue);  box-shadow: 0 0 10px var(--blue); }
+  .kpi-card.purple::before { background: var(--purple); box-shadow: 0 0 10px var(--purple); }
+  .kpi-card.orange::before { background: var(--orange); box-shadow: 0 0 10px var(--orange); }
+
+  .kpi-icon {
+    font-size: 28px;
+    margin-bottom: 12px;
+  }
+  .kpi-value {
+    font-size: 32px;
+    font-weight: 800;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .kpi-card.green .kpi-value { color: var(--green); }
+  .kpi-card.blue  .kpi-value { color: var(--blue); }
+  .kpi-card.purple .kpi-value { color: var(--purple); }
+  .kpi-card.orange .kpi-value { color: var(--orange); }
+
+  .kpi-label { color: var(--muted); font-size: 12px; }
+  .kpi-change {
+    font-size: 11px;
+    margin-top: 8px;
+    padding: 3px 8px;
+    border-radius: 20px;
+    display: inline-block;
+  }
+  .kpi-change.up   { background: rgba(37,211,102,0.15); color: var(--green); }
+  .kpi-change.down { background: rgba(239,68,68,0.15);  color: var(--red); }
+
+  /* ── Charts grid ── */
+  .charts-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .chart-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .chart-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+  .chart-title { font-size: 14px; font-weight: 600; }
+  .chart-sub   { color: var(--muted); font-size: 12px; }
+
+  /* ── Bottom grid ── */
+  .bottom-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  /* ── Table ── */
+  .table-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .table-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+    font-weight: 600;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    padding: 10px 16px;
+    text-align: right;
+    font-size: 11px;
+    color: var(--muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    background: rgba(255,255,255,0.02);
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 12px 16px;
+    font-size: 13px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  /* ── Badges ── */
+  .badge {
+    padding: 3px 8px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .badge-green  { background: rgba(37,211,102,0.15); color: var(--green); }
+  .badge-blue   { background: rgba(59,130,246,0.15); color: var(--blue); }
+  .badge-purple { background: rgba(139,92,246,0.15); color: var(--purple); }
+  .badge-orange { background: rgba(245,158,11,0.15); color: var(--orange); }
+  .badge-red    { background: rgba(239,68,68,0.15);  color: var(--red); }
+
+  /* ── Activity feed ── */
+  .activity-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    transition: background 0.2s;
+  }
+  .activity-item:hover { background: rgba(255,255,255,0.02); }
+  .activity-avatar {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    flex-shrink: 0;
+  }
+  .activity-content { flex: 1; }
+  .activity-text { font-size: 13px; line-height: 1.4; }
+  .activity-text strong { color: var(--blue); }
+  .activity-meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+  /* ── Tenant selector ── */
+  .tenant-selector {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 12px;
+    color: var(--text);
+    font-size: 13px;
+    cursor: pointer;
+    outline: none;
+  }
+
+  /* ── Response time gauge ── */
+  .gauge-wrap { text-align: center; padding: 10px 0; }
+  .gauge-value { font-size: 40px; font-weight: 800; color: var(--green); }
+  .gauge-unit  { font-size: 14px; color: var(--muted); }
+  .gauge-bar-bg {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    margin: 12px 0;
+    overflow: hidden;
+  }
+  .gauge-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--green), var(--blue));
+    border-radius: 3px;
+    width: 72%;
+    transition: width 1s ease;
+  }
+
+  /* ── Tenant cards ── */
+  .tenants-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .tenant-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    transition: all 0.2s;
+    cursor: pointer;
+  }
+  .tenant-card:hover {
+    border-color: var(--blue);
+    transform: translateY(-2px);
+  }
+  .tenant-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .tenant-name { font-weight: 600; font-size: 14px; }
+  .tenant-stat { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .tenant-msgs { font-size: 22px; font-weight: 800; color: var(--blue); }
+
+  /* ── Config section ── */
+  .config-section { display: none; }
+  .config-section.active { display: block; }
+  .overview-section { display: block; }
+  .overview-section.hidden { display: none; }
+
+  .input-group { margin-bottom: 16px; }
+  .input-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; display: block; }
+  .input-field {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: var(--text);
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .input-field:focus { border-color: var(--blue); }
+  .input-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+  .success-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(100px);
+    background: var(--green);
+    color: #000;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 13px;
+    transition: transform 0.3s;
+    z-index: 999;
+  }
+  .success-toast.show { transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<!-- Topbar -->
+<div class="topbar">
+  <div class="logo">
+    <div class="dot"></div>
+    <span>🤖 WhatsApp AI Agent</span>
+    <span style="color:var(--muted);font-weight:400;font-size:13px">— لوحة التحكم</span>
+  </div>
+  <div class="topbar-right">
+    <span class="live-badge">● مباشر</span>
+    <span id="clock"></span>
+    <select class="tenant-selector" id="tenantSelect" onchange="switchTenant(this.value)">
+      <option value="all">جميع العملاء</option>
+      <option value="t1">شركة النور للتقنية</option>
+      <option value="t2">متجر الأفق</option>
+      <option value="t3">عيادة الصحة</option>
+    </select>
+  </div>
+</div>
+
+<div class="layout">
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-section">القائمة</div>
+    <div class="sidebar-item active" onclick="showSection('overview')">📊 نظرة عامة</div>
+    <div class="sidebar-item" onclick="showSection('tenants')">🏢 العملاء</div>
+    <div class="sidebar-item" onclick="showSection('conversations')">💬 المحادثات</div>
+    <div class="sidebar-item" onclick="showSection('tasks')">✅ المهام</div>
+    <div class="sidebar-section">الإعدادات</div>
+    <div class="sidebar-item" onclick="showSection('config')">⚙️ إعداد العملاء</div>
+    <div class="sidebar-item" onclick="showSection('api')">🔑 مفاتيح API</div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- ══ OVERVIEW ══ -->
+    <div id="section-overview">
+      <div class="page-header">
+        <div>
+          <div class="page-title">نظرة عامة</div>
+          <div class="page-subtitle" id="overviewSubtitle">جميع العملاء — آخر 30 يوم</div>
+        </div>
+        <button class="btn btn-primary" onclick="refreshData()">🔄 تحديث</button>
+      </div>
+
+      <!-- KPIs -->
+      <div class="kpi-grid">
+        <div class="kpi-card green">
+          <div class="kpi-icon">💬</div>
+          <div class="kpi-value" id="kpi-messages">24,731</div>
+          <div class="kpi-label">إجمالي الرسائل</div>
+          <div class="kpi-change up" id="kpi-messages-change">↑ 18% هذا الأسبوع</div>
+        </div>
+        <div class="kpi-card blue">
+          <div class="kpi-icon">👥</div>
+          <div class="kpi-value" id="kpi-users">1,284</div>
+          <div class="kpi-label">مستخدمون نشطون</div>
+          <div class="kpi-change up">↑ 32 مستخدم جديد اليوم</div>
+        </div>
+        <div class="kpi-card purple">
+          <div class="kpi-icon">🏢</div>
+          <div class="kpi-value" id="kpi-tenants">3</div>
+          <div class="kpi-label">العملاء النشطون</div>
+          <div class="kpi-change up">↑ جميعهم نشطون</div>
+        </div>
+        <div class="kpi-card orange">
+          <div class="kpi-icon">⚡</div>
+          <div class="kpi-value" id="kpi-response">1.7s</div>
+          <div class="kpi-label">متوسط وقت الرد</div>
+          <div class="kpi-change up">↓ 0.3s تحسن</div>
+        </div>
+      </div>
+
+      <!-- Charts -->
+      <div class="charts-grid">
+        <div class="chart-card">
+          <div class="chart-header">
+            <div>
+              <div class="chart-title">الرسائل اليومية</div>
+              <div class="chart-sub">آخر 14 يوم</div>
+            </div>
+          </div>
+          <canvas id="messagesChart" height="200"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-header">
+            <div>
+              <div class="chart-title">توزيع النوايا</div>
+              <div class="chart-sub">Intent Distribution</div>
+            </div>
+          </div>
+          <canvas id="intentChart" height="200"></canvas>
+        </div>
+      </div>
+
+      <!-- Bottom grid -->
+      <div class="bottom-grid">
+        <!-- Recent activity -->
+        <div class="table-card">
+          <div class="table-header">
+            <span>🔴 نشاط مباشر</span>
+            <span class="badge badge-green">● مباشر</span>
+          </div>
+          <div id="activityFeed"></div>
+        </div>
+
+        <!-- Response time + top tenants -->
+        <div style="display:flex;flex-direction:column;gap:16px">
+          <div class="chart-card">
+            <div class="chart-title" style="margin-bottom:12px">⚡ أداء الاستجابة</div>
+            <div class="gauge-wrap">
+              <div class="gauge-value" id="gaugeVal">1.7</div>
+              <div class="gauge-unit">ثانية متوسط</div>
+              <div class="gauge-bar-bg"><div class="gauge-bar-fill" id="gaugeBar"></div></div>
+            </div>
+            <canvas id="responseChart" height="100"></canvas>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title" style="margin-bottom:12px">📊 رسائل لكل عميل اليوم</div>
+            <canvas id="tenantChart" height="120"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ TENANTS ══ -->
+    <div id="section-tenants" style="display:none">
+      <div class="page-header">
+        <div>
+          <div class="page-title">العملاء</div>
+          <div class="page-subtitle">إدارة حسابات العملاء</div>
+        </div>
+        <button class="btn btn-primary">+ إضافة عميل</button>
+      </div>
+      <div class="tenants-grid" id="tenantsGrid"></div>
+    </div>
+
+    <!-- ══ CONVERSATIONS ══ -->
+    <div id="section-conversations" style="display:none">
+      <div class="page-header">
+        <div>
+          <div class="page-title">المحادثات</div>
+          <div class="page-subtitle">آخر 50 محادثة</div>
+        </div>
+      </div>
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>المستخدم</th>
+              <th>الرسالة</th>
+              <th>النية</th>
+              <th>الرد (رسائل)</th>
+              <th>الوقت</th>
+              <th>المدة</th>
+            </tr>
+          </thead>
+          <tbody id="conversationsTable"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ══ TASKS ══ -->
+    <div id="section-tasks" style="display:none">
+      <div class="page-header">
+        <div>
+          <div class="page-title">المهام والتذكيرات</div>
+          <div class="page-subtitle">المهام النشطة</div>
+        </div>
+      </div>
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>المستخدم</th>
+              <th>المهمة</th>
+              <th>موعد التذكير</th>
+              <th>الحالة</th>
+              <th>العميل</th>
+            </tr>
+          </thead>
+          <tbody id="tasksTable"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ══ CONFIG ══ -->
+    <div id="section-config" style="display:none">
+      <div class="page-header">
+        <div>
+          <div class="page-title">إعداد العملاء</div>
+          <div class="page-subtitle">اضبط إعدادات كل عميل</div>
+        </div>
+        <button class="btn btn-primary" onclick="saveConfig()">💾 حفظ</button>
+      </div>
+      <div class="chart-card" style="max-width:700px">
+        <div class="input-row">
+          <div class="input-group">
+            <label class="input-label">اسم العميل</label>
+            <input class="input-field" placeholder="مثال: شركة النور للتقنية" value="شركة النور للتقنية">
+          </div>
+          <div class="input-group">
+            <label class="input-label">اسم البوت</label>
+            <input class="input-field" placeholder="مثال: نور" value="نور">
+          </div>
+        </div>
+        <div class="input-group">
+          <label class="input-label">شخصية البوت (BOT_PERSONA)</label>
+          <textarea class="input-field" rows="3" placeholder="أنت موظف دعم عملاء احترافي...">أنت نور، مساعد ذكي لشركة النور للتقنية. ردودك مختصرة ومهنية. تتحدث العربية والإنجليزية.</textarea>
+        </div>
+        <div class="input-row">
+          <div class="input-group">
+            <label class="input-label">رقم واتساب (Phone Number ID)</label>
+            <input class="input-field" placeholder="123456789" value="123456789">
+          </div>
+          <div class="input-group">
+            <label class="input-label">حد الرسائل/دقيقة</label>
+            <input class="input-field" type="number" placeholder="10" value="10">
+          </div>
+        </div>
+        <div class="input-group">
+          <label class="input-label">الخطة</label>
+          <select class="input-field">
+            <option>Starter — حتى 500 رسالة/يوم</option>
+            <option selected>Pro — حتى 5000 رسالة/يوم</option>
+            <option>Enterprise — غير محدود</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ API KEYS ══ -->
+    <div id="section-api" style="display:none">
+      <div class="page-header">
+        <div>
+          <div class="page-title">مفاتيح API</div>
+          <div class="page-subtitle">أضف هذه المتغيرات في n8n → Environment Variables</div>
+        </div>
+      </div>
+      <div class="chart-card" style="max-width:700px">
+        <div id="apiKeysList"></div>
+      </div>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /layout -->
+
+<div class="success-toast" id="toast">✅ تم الحفظ بنجاح!</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+//  WhatsApp AI Agent v4 — Dashboard JS
+//  FIXED: Real Supabase integration with demo fallback
+// ══════════════════════════════════════════════════════════════
+
+// ── Clock ──────────────────────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toLocaleTimeString('ar-SA', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+}
+setInterval(updateClock, 1000); updateClock();
+
+// ── Supabase Config (set these to connect real data) ───────
+const SUPABASE_URL = localStorage.getItem('sb_url') || '';
+const SUPABASE_KEY = localStorage.getItem('sb_key') || '';
+const IS_LIVE = !!(SUPABASE_URL && SUPABASE_KEY);
+
+// ── Demo fallback data (used when Supabase not configured) ──
+const DEMO_TENANTS = [
+  { tenant_id:'t1', name:'شركة النور للتقنية', plan:'Pro',     total_messages:14230, total_users:720, messages_today:487, avg_response_ms:1400 },
+  { tenant_id:'t2', name:'متجر الأفق',          plan:'Starter', total_messages:7840,  total_users:412, messages_today:312, avg_response_ms:1100 },
+  { tenant_id:'t3', name:'عيادة الصحة',         plan:'Pro',     total_messages:2661,  total_users:152, messages_today:121, avg_response_ms:1800 },
+];
+const DEMO_CONVOS = [
+  { user_name:'أحمد محمد', message:'ذكرني باجتماع العمل الساعة 3', intent:'task',     message_count:3, duration_ms:1400, timestamp: new Date(Date.now()-120000).toISOString(), tenant_id:'t1' },
+  { user_name:'سارة علي',  message:'ما هي ساعات العمل؟',           intent:'question', message_count:1, duration_ms:1100, timestamp: new Date(Date.now()-300000).toISOString(), tenant_id:'t2' },
+  { user_name:'محمد خالد', message:'مرحبا كيف يمكنك مساعدتي',     intent:'greeting', message_count:2, duration_ms:900,  timestamp: new Date(Date.now()-480000).toISOString(), tenant_id:'t3' },
+  { user_name:'فاطمة أحمد',message:'احتاج موعد مع الدكتور',        intent:'task',     message_count:3, duration_ms:1800, timestamp: new Date(Date.now()-720000).toISOString(), tenant_id:'t3' },
+  { user_name:'عمر سعيد',  message:'أرسل تقرير المبيعات',          intent:'command',  message_count:2, duration_ms:2100, timestamp: new Date(Date.now()-900000).toISOString(), tenant_id:'t1' },
+];
+const DEMO_TASKS = [
+  { user_id:'t1:966501234567', task:'اجتماع العمل',    due_at: new Date(Date.now()+7200000).toISOString(),   sent:false, tenant_id:'t1' },
+  { user_id:'t3:966509876543', task:'موعد الدكتور سالم',due_at: new Date(Date.now()+86400000).toISOString(),  sent:false, tenant_id:'t3' },
+  { user_id:'t2:966505551234', task:'تسليم المشروع',   due_at: new Date(Date.now()+604800000).toISOString(), sent:false, tenant_id:'t2' },
+  { user_id:'t1:966502223333', task:'دفع الفاتورة',    due_at: new Date(Date.now()-86400000).toISOString(),  sent:true,  tenant_id:'t1' },
+];
+const DEMO_DAILY = [...Array(14)].map((_, i) => ({
+  day: new Date(Date.now() - (13-i)*86400000).toISOString().split('T')[0],
+  total_messages: [320,410,380,520,490,670,580,710,640,820,760,890,810,920][i],
+  unique_users:   [80,105,95,130,120,168,145,178,160,205,190,223,203,230][i],
+  tasks:          [58,74,68,94,88,121,104,128,115,148,137,161,146,166][i],
+  questions:      [134,172,159,218,205,281,243,298,269,344,318,373,339,386][i],
+  avg_response_ms: 1500 + Math.floor(Math.random()*500)
+}));
+
+// ── App State ───────────────────────────────────────────────
+let appData = {
+  tenants: DEMO_TENANTS,
+  convos: DEMO_CONVOS,
+  tasks: DEMO_TASKS,
+  daily: DEMO_DAILY,
+  selectedTenant: 'all',
+  loading: false,
+  charts: {}
+};
+
+// ── Supabase fetch helper ───────────────────────────────────
+async function sbFetch(path) {
+  const r = await fetch(SUPABASE_URL + path, {
+    headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+  });
+  if (!r.ok) throw new Error('Supabase error: ' + r.status);
+  return r.json();
+}
+
+// ── Load real data from Supabase ────────────────────────────
+async function loadLiveData() {
+  if (!IS_LIVE) return;
+  setLoadingState(true);
+  try {
+    const [tenants, convos, tasks, daily] = await Promise.all([
+      sbFetch('/rest/v1/tenant_overview?select=*&order=total_messages.desc'),
+      sbFetch('/rest/v1/conversations?select=user_name,message,intent,message_count,duration_ms,timestamp,tenant_id&order=timestamp.desc&limit=50'),
+      sbFetch('/rest/v1/tasks?select=*&order=due_at.asc&limit=50'),
+      sbFetch('/rest/v1/daily_stats?select=*&order=day.desc&limit=14')
+    ]);
+    appData.tenants = tenants.length ? tenants : DEMO_TENANTS;
+    appData.convos  = convos.length  ? convos  : DEMO_CONVOS;
+    appData.tasks   = tasks.length   ? tasks   : DEMO_TASKS;
+    appData.daily   = daily.length   ? daily.reverse() : DEMO_DAILY;
+    showLiveBadge(true);
+  } catch(e) {
+    console.warn('Supabase load failed, using demo data:', e.message);
+    showLiveBadge(false);
+  }
+  setLoadingState(false);
+  refreshAll();
+}
+
+function setLoadingState(on) {
+  appData.loading = on;
+  const badge = document.getElementById('liveBadge');
+  if (badge) badge.textContent = on ? '⏳ جاري التحميل...' : (IS_LIVE ? '🟢 بيانات حية' : '🟡 بيانات تجريبية');
+}
+
+function showLiveBadge(live) {
+  const badge = document.getElementById('liveBadge');
+  if (!badge) return;
+  badge.textContent = live ? '🟢 بيانات حية' : '🟡 بيانات تجريبية';
+  badge.style.color  = live ? 'var(--green)' : 'var(--orange)';
+}
+
+// ── Section navigation ────────────────────────────────────
+function showSection(name) {
+  document.querySelectorAll('.sidebar-item').forEach(el => el.classList.remove('active'));
+  event.target.classList.add('active');
+  ['overview','tenants','conversations','tasks','config','api'].forEach(s => {
+    const el = document.getElementById('section-' + s);
+    if (el) el.style.display = s === name ? 'block' : 'none';
+  });
+  if (name === 'tenants')       renderTenants();
+  if (name === 'conversations') renderConversations();
+  if (name === 'tasks')         renderTasks();
+  if (name === 'api')           renderApiKeys();
+}
+
+// ── Tenant switch ─────────────────────────────────────────
+function switchTenant(val) {
+  appData.selectedTenant = val;
+  const t = appData.tenants.find(x => x.tenant_id === val);
+  const sub = val === 'all' ? 'جميع العملاء — آخر 30 يوم' : (t?.name || val) + ' — آخر 30 يوم';
+  document.getElementById('overviewSubtitle').textContent = sub;
+  updateKPIs();
+  rebuildCharts();
+}
+
+// ── KPIs ──────────────────────────────────────────────────
+function updateKPIs() {
+  const sel = appData.selectedTenant;
+  let msgs = 0, users = 0, tenantCount = 0, avgResp = 0;
+  const src = sel === 'all' ? appData.tenants : appData.tenants.filter(t => t.tenant_id === sel);
+  src.forEach(t => {
+    msgs  += (t.total_messages || t.msgs || 0);
+    users += (t.total_users   || t.users || 0);
+    avgResp += (t.avg_response_ms || 1500);
+  });
+  tenantCount = sel === 'all' ? appData.tenants.length : 1;
+  avgResp = src.length ? Math.round(avgResp / src.length) : 0;
+
+  setText('kpi-messages', msgs.toLocaleString('ar-SA'));
+  setText('kpi-users',    users.toLocaleString('ar-SA'));
+  setText('kpi-tenants',  tenantCount.toString());
+  setText('kpi-response', avgResp ? (avgResp/1000).toFixed(1) + 'ث' : '—');
+}
+function setText(id, val) { const el = document.getElementById(id); if (el) el.textContent = val; }
+
+// ── Charts ────────────────────────────────────────────────
+const INTENTS = ['تحية','مهمة','سؤال','أمر','غير معروف'];
+const COLORS  = ['#25d366','#3b82f6','#8b5cf6','#f59e0b','#ef4444'];
+const INTENT_KEYS = ['greetings','tasks','questions','commands','unknown'];
+
+function buildCharts() {
+  const daily = appData.daily;
+  const days  = daily.map(d => new Date(d.day).toLocaleDateString('ar-SA', {month:'short',day:'numeric'}));
+  const vals  = daily.map(d => d.total_messages || 0);
+
+  // Compute intent totals from convos
+  const intentCounts = [0,0,0,0,0];
+  const intentMap = { greeting:0, task:1, question:2, command:3, unknown:4 };
+  appData.convos.forEach(c => {
+    const idx = intentMap[c.intent];
+    if (idx !== undefined) intentCounts[idx]++;
+  });
+  // Fallback to daily stats if convos empty
+  if (intentCounts.every(v => v === 0)) {
+    appData.daily.forEach(d => {
+      intentCounts[0] += d.greetings || 0;
+      intentCounts[1] += d.tasks     || 0;
+      intentCounts[2] += d.questions || 0;
+      intentCounts[3] += d.commands  || 0;
+      intentCounts[4] += d.unknown   || 0;
+    });
+  }
+
+  // Destroy old charts if exist
+  Object.values(appData.charts).forEach(c => { try { c.destroy(); } catch(e) {} });
+  appData.charts = {};
+
+  appData.charts.messages = new Chart(document.getElementById('messagesChart'), {
+    type: 'line',
+    data: {
+      labels: days,
+      datasets: [{
+        label: 'الرسائل',
+        data: vals,
+        borderColor: '#3b82f6',
+        backgroundColor: 'rgba(59,130,246,0.08)',
+        fill: true, tension: 0.4, pointRadius: 3, pointBackgroundColor: '#3b82f6'
+      }]
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: '#1e2d45' }, ticks: { color: '#64748b', font:{size:10} } },
+        y: { grid: { color: '#1e2d45' }, ticks: { color: '#64748b', font:{size:10} } }
+      }
+    }
+  });
+
+  appData.charts.intent = new Chart(document.getElementById('intentChart'), {
+    type: 'doughnut',
+    data: {
+      labels: INTENTS,
+      datasets: [{ data: intentCounts, backgroundColor: COLORS, borderWidth: 0, hoverOffset: 6 }]
+    },
+    options: {
+      plugins: { legend: { position:'bottom', labels:{ color:'#94a3b8', font:{size:11}, padding:12, boxWidth:10 } } },
+      cutout: '65%'
+    }
+  });
+
+  // Response time chart from daily data
+  const respData = appData.daily.slice(-7).map(d => ((d.avg_response_ms || 1500) / 1000).toFixed(2));
+  const respDays  = appData.daily.slice(-7).map(d => new Date(d.day).toLocaleDateString('ar-SA',{weekday:'short'}));
+  appData.charts.response = new Chart(document.getElementById('responseChart'), {
+    type: 'bar',
+    data: {
+      labels: respDays,
+      datasets: [{ data: respData, backgroundColor:'rgba(37,211,102,0.3)', borderColor:'#25d366', borderWidth:1, borderRadius:4 }]
+    },
+    options: {
+      plugins: { legend:{display:false} },
+      scales: {
+        x: { grid:{display:false}, ticks:{color:'#64748b',font:{size:10}} },
+        y: { grid:{color:'#1e2d45'}, ticks:{color:'#64748b',font:{size:10}} }
+      }
+    }
+  });
+
+  // Tenant chart
+  const tenants = appData.tenants.slice(0,5);
+  appData.charts.tenant = new Chart(document.getElementById('tenantChart'), {
+    type: 'bar',
+    data: {
+      labels: tenants.map(t => (t.name||t.tenant_id).split(' ')[0]),
+      datasets: [{
+        data: tenants.map(t => t.messages_today || t.msgs || 0),
+        backgroundColor: ['rgba(59,130,246,0.7)','rgba(139,92,246,0.7)','rgba(37,211,102,0.7)','rgba(245,158,11,0.7)','rgba(239,68,68,0.7)'],
+        borderRadius:6, borderWidth:0
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      plugins: { legend:{display:false} },
+      scales: {
+        x: { grid:{color:'#1e2d45'}, ticks:{color:'#64748b',font:{size:10}} },
+        y: { grid:{display:false}, ticks:{color:'#94a3b8',font:{size:11}} }
+      }
+    }
+  });
+}
+
+function rebuildCharts() { buildCharts(); }
+
+// ── Activity feed ─────────────────────────────────────────
+function buildActivity() {
+  const feed = document.getElementById('activityFeed');
+  // Generate activity from real convos
+  const events = appData.convos.slice(0, 5).map(c => {
+    const icons = { task:'📋', question:'❓', greeting:'👋', command:'⚡', unknown:'❔' };
+    const actions = { task:'أضاف مهمة جديدة', question:'طرح سؤالاً', greeting:'بدأ محادثة', command:'أرسل أمراً', unknown:'أرسل رسالة' };
+    const colors = { task:'#3b82f6', question:'#8b5cf6', greeting:'#25d366', command:'#f59e0b', unknown:'#64748b' };
+    const elapsed = Math.round((Date.now() - new Date(c.timestamp).getTime()) / 60000);
+    const timeStr = elapsed < 1 ? 'الآن' : elapsed < 60 ? `منذ ${elapsed} دقيقة` : `منذ ${Math.round(elapsed/60)} ساعة`;
+    const tenant = appData.tenants.find(t => t.tenant_id === c.tenant_id);
+    return { emoji: icons[c.intent]||'💬', user: c.user_name||'مستخدم', action: actions[c.intent]||'أرسل رسالة', time: timeStr, tenant: tenant?.name||c.tenant_id||'—', color: colors[c.intent]||'#64748b' };
+  });
+
+  feed.innerHTML = events.map(a => `
+    <div class="activity-item">
+      <div class="activity-avatar" style="background:${a.color}22">${a.emoji}</div>
+      <div class="activity-content">
+        <div class="activity-text"><strong>${a.user}</strong> ${a.action}</div>
+        <div class="activity-meta">${a.time} · ${a.tenant}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ── Tenants section ───────────────────────────────────────
+function renderTenants() {
+  const planColor = { Pro:'blue', Starter:'purple', Enterprise:'green' };
+  document.getElementById('tenantsGrid').innerHTML = appData.tenants.map(t => `
+    <div class="tenant-card">
+      <div class="tenant-card-header">
+        <div class="tenant-name">${t.name||t.tenant_id}</div>
+        <span class="badge badge-${planColor[t.plan]||'blue'}">${t.plan||'—'}</span>
+      </div>
+      <div class="tenant-msgs">${(t.total_messages||t.msgs||0).toLocaleString('ar-SA')}</div>
+      <div class="tenant-stat">رسالة إجمالية</div>
+      <div class="tenant-stat" style="margin-top:8px">
+        👥 ${(t.total_users||t.users||0).toLocaleString('ar-SA')} مستخدم
+        · اليوم: ${(t.messages_today||0).toLocaleString('ar-SA')}
+      </div>
+    </div>
+  `).join('');
+}
+
+// ── Conversations section ─────────────────────────────────
+function renderConversations() {
+  const intentBadge = { task:'badge-blue', question:'badge-purple', greeting:'badge-green', command:'badge-orange', unknown:'badge-red' };
+  const intentAr    = { task:'مهمة', question:'سؤال', greeting:'تحية', command:'أمر', unknown:'غير معروف' };
+  document.getElementById('conversationsTable').innerHTML = appData.convos.map(c => {
+    const elapsed = Math.round((Date.now() - new Date(c.timestamp).getTime()) / 60000);
+    const timeStr = elapsed < 1 ? 'الآن' : elapsed < 60 ? `منذ ${elapsed} د` : `منذ ${Math.round(elapsed/60)} س`;
+    const dur = c.duration_ms ? (c.duration_ms/1000).toFixed(1)+'s' : '—';
+    return `<tr>
+      <td>${c.user_name||'—'}</td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.message||'—'}</td>
+      <td><span class="badge ${intentBadge[c.intent]||'badge-red'}">${intentAr[c.intent]||c.intent||'—'}</span></td>
+      <td><span class="badge badge-green">${c.message_count||1} رسائل</span></td>
+      <td style="color:var(--muted)">${timeStr}</td>
+      <td style="color:var(--green)">${dur}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Tasks section ─────────────────────────────────────────
+function renderTasks() {
+  document.getElementById('tasksTable').innerHTML = appData.tasks.map(t => {
+    const due = t.due_at ? new Date(t.due_at).toLocaleString('ar-SA',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+    const isOverdue = t.due_at && !t.sent && new Date(t.due_at) < new Date();
+    const userId = (t.user_id||'').split(':').pop() || '—';
+    const tenant = appData.tenants.find(x => x.tenant_id === t.tenant_id);
+    return `<tr>
+      <td>${userId}</td>
+      <td>${t.task||'—'}</td>
+      <td style="color:${isOverdue?'var(--red)':'inherit'}">${due}</td>
+      <td><span class="badge ${t.sent ? 'badge-green' : (isOverdue?'badge-red':'badge-orange')}">${t.sent ? '✅ أُرسل' : (isOverdue?'⚠️ متأخر':'⏳ انتظار')}</span></td>
+      <td style="color:var(--muted)">${tenant?.name||t.tenant_id||'—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Refresh all UI ────────────────────────────────────────
+function refreshAll() {
+  updateKPIs();
+  buildCharts();
+  buildActivity();
+}
+
+// ── Supabase connect modal ────────────────────────────────
+function openConnectModal() {
+  const url = prompt('أدخل Supabase URL:', localStorage.getItem('sb_url')||'');
+  if (!url) return;
+  const key = prompt('أدخل Supabase anon key:', localStorage.getItem('sb_key')||'');
+  if (!key) return;
+  localStorage.setItem('sb_url', url);
+  localStorage.setItem('sb_key', key);
+  location.reload();
+}
+
+// ── API Keys section ──────────────────────────────────────
+function renderApiKeys() {
+  const keys = [
+    { name:'GEMINI_API_KEY',           desc:'Google Gemini API',      required:true  },
+    { name:'WHATSAPP_ACCESS_TOKEN',    desc:'Meta WhatsApp API',      required:true  },
+    { name:'WHATSAPP_PHONE_NUMBER_ID', desc:'رقم الهاتف في Meta',     required:true  },
+    { name:'WHATSAPP_VERIFY_TOKEN',    desc:'رمز التحقق (تختاره أنت)',required:true  },
+    { name:'WHATSAPP_APP_SECRET',      desc:'App Secret من Meta',     required:true  },
+    { name:'SUPABASE_URL',             desc:'Supabase Project URL',   required:false },
+    { name:'SUPABASE_KEY',             desc:'Supabase Service Key',   required:false },
+    { name:'REDIS_URL',                desc:'Upstash Redis URL',      required:false },
+    { name:'REDIS_TOKEN',              desc:'Upstash Redis Token',    required:false },
+    { name:'OPENAI_API_KEY',           desc:'OpenAI Whisper (صوت)',   required:false },
+    { name:'TELEGRAM_BOT_TOKEN',       desc:'Telegram Bot Token',     required:false },
+    { name:'TELEGRAM_CHAT_ID',         desc:'Telegram Chat ID',       required:false },
+    { name:'BOT_NAME',                 desc:'اسم البوت المخصص',       required:false },
+    { name:'BOT_PERSONA',              desc:'شخصية البوت المخصصة',    required:false },
+    { name:'RATE_LIMIT_PER_MIN',       desc:'حد الرسائل في الدقيقة',  required:false },
+    { name:'MAX_MESSAGE_LENGTH',       desc:'الحد الأقصى لطول الرسالة',required:false },
+  ];
+  document.getElementById('apiKeysList').innerHTML = keys.map(k => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border)">
+      <div>
+        <div style="font-size:13px;font-weight:600;font-family:monospace;color:var(--text)">${k.name}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px">${k.desc}</div>
+      </div>
+      <span class="badge ${k.required ? 'badge-red' : 'badge-blue'}">${k.required ? 'مطلوب' : 'اختياري'}</span>
+    </div>
+  `).join('');
+}
+
+// ── Live simulation (demo mode only) ─────────────────────
+if (!IS_LIVE) {
+  const LIVE_EVENTS = [
+    { emoji:'💬', user:'خالد عبدالله', action:'أرسل سؤالاً جديداً',    tenant:'النور',  color:'#8b5cf6' },
+    { emoji:'✅', user:'Bot',           action:'أرسل تذكيراً لسارة',   tenant:'الأفق',  color:'#25d366' },
+    { emoji:'📋', user:'نورة خالد',    action:'أضافت مهمة جديدة',     tenant:'الصحة',  color:'#3b82f6' },
+    { emoji:'👋', user:'راشد محمد',    action:'انضم للمرة الأولى',    tenant:'النور',  color:'#f59e0b' },
+  ];
+  let liveIdx = 0;
+  setInterval(() => {
+    const ev = LIVE_EVENTS[liveIdx % LIVE_EVENTS.length];
+    const feed = document.getElementById('activityFeed');
+    if (!feed) return;
+    const item = document.createElement('div');
+    item.className = 'activity-item';
+    item.style.background = 'rgba(59,130,246,0.05)';
+    item.innerHTML = `
+      <div class="activity-avatar" style="background:${ev.color}22">${ev.emoji}</div>
+      <div class="activity-content">
+        <div class="activity-text"><strong>${ev.user}</strong> ${ev.action}</div>
+        <div class="activity-meta">الآن · ${ev.tenant}</div>
+      </div>`;
+    feed.insertBefore(item, feed.firstChild);
+    if (feed.children.length > 8) feed.removeChild(feed.lastChild);
+    setTimeout(() => item.style.background = '', 2000);
+    liveIdx++;
+  }, 4000);
+}
+
+// ── Auto-refresh every 60s if live ───────────────────────
+if (IS_LIVE) {
+  setInterval(loadLiveData, 60000);
+}
+
+// ── Init ──────────────────────────────────────────────────
+(async function init() {
+  // Inject live badge into topbar
+  const topbar = document.querySelector('.topbar');
+  if (topbar) {
+    const badge = document.createElement('span');
+    badge.id = 'liveBadge';
+    badge.style.cssText = 'font-size:12px;color:var(--orange);margin-right:auto;margin-left:16px';
+    badge.textContent = IS_LIVE ? '⏳ جاري التحميل...' : '🟡 بيانات تجريبية — اضغط هنا للاتصال بـ Supabase';
+    badge.style.cursor = IS_LIVE ? 'default' : 'pointer';
+    if (!IS_LIVE) badge.onclick = openConnectModal;
+    topbar.appendChild(badge);
+  }
+
+  if (IS_LIVE) {
+    await loadLiveData();
+  } else {
+    refreshAll();
+    buildActivity();
+  }
+})();
+</script>
+</body>
+</html>
