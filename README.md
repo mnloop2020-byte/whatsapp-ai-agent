@@ -121,7 +121,9 @@
 
 ## 📄 الترخيص | License
 
-MIT License — للاستخدام الحر مع الإشارة للمصدر | Free to use with attribution
+MIT License
+
+Copyright (c) 2026 mnloop2020-byte
 
 ---
 
